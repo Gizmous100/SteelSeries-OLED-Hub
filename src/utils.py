@@ -43,24 +43,40 @@ def fetch_content_path(content):
 
 def normalize_text(text: str) -> str:
     """
-    Replaces Turkish characters with their ASCII equivalents to prevent rendering issues on the OLED.
+    Replaces diacritics (Polish, Turkish, German, Romance, etc.) with their ASCII equivalents
+    to prevent missing-glyph rendering issues on 7-bit ASCII OLED fonts (DS-DIGIB, MunroSmall).
     """
     if not text:
         return ""
-        
+
+    import unicodedata
+
     replacements = {
+        "ą": "a", "Ą": "A",
+        "ć": "c", "Ć": "C",
+        "ę": "e", "Ę": "E",
+        "ł": "l", "Ł": "L",
+        "ń": "n", "Ń": "N",
+        "ó": "o", "Ó": "O",
+        "ś": "s", "Ś": "S",
+        "ź": "z", "Ź": "Z",
+        "ż": "z", "Ż": "Z",
         "ş": "s", "Ş": "S",
         "ç": "c", "Ç": "C",
         "ü": "u", "Ü": "U",
         "ö": "o", "Ö": "O",
         "ğ": "g", "Ğ": "G",
         "ı": "i", "İ": "I",
+        "ß": "ss", "ẞ": "SS",
+        "ä": "a", "Ä": "A",
     }
-    
-    for turkey_char, ascii_char in replacements.items():
-        text = text.replace(turkey_char, ascii_char)
-        
-    return text
+
+    for src_char, ascii_char in replacements.items():
+        text = text.replace(src_char, ascii_char)
+
+    # Strip any remaining combining accents (e.g. é -> e, ñ -> n, ã -> a)
+    normalized = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in normalized if not unicodedata.combining(c))
 
 def set_startup(enable: bool):
     """

@@ -4,7 +4,27 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 **Project Versioning Policy:**
 - **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.47`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.48`).
+
+---
+
+## [`v1.48`] — 2026-10-10 — Multi-Language OLED Support (9 Languages for Clock Days & Weather)
+### ✨ New Features & Improvements (`+0.01`)
+- **Unified `OLED Language (Days & Weather)` Selector (`Settings → Display → ⚙️ General Settings`):**
+  - Added a 9-language selector (`oled_language` preference, with automatic migration from legacy `use_polish_days`) supporting the most popular languages for both Clock Day-of-Week abbreviations and Full-Screen Weather Overlay (`F8`) descriptions:
+    1. **`English (EN)`** — Days: `Mon, Tue, Wed, Thu, Fri, Sat, Sun` | Weather: `Clear Sky`, `Cloudy`, `Fog`, `Drizzle`, `Rain`, `Snow`, `Thunderstorm`.
+    2. **`Polish (PL)`** — Days: `Pon, Wt, Sr, Czw, Pt, Sob, Nd` | Weather: `Bezchmurnie`, `Zachmurzenie`, `Mgla`, `Mzawka`, `Deszcz`, `Snieg`, `Burza`.
+    3. **`German (DE)`** — Days: `Mo, Di, Mi, Do, Fr, Sa, So` | Weather: `Klar`, `Bewolkt`, `Nebel`, `Niesel`, `Regen`, `Schnee`, `Gewitter`.
+    4. **`Spanish (ES)`** — Days: `Lun, Mar, Mie, Jue, Vie, Sab, Dom` | Weather: `Despejado`, `Nublado`, `Niebla`, `Llovizna`, `Lluvia`, `Nieve`, `Tormenta`.
+    5. **`French (FR)`** — Days: `Lun, Mar, Mer, Jeu, Ven, Sam, Dim` | Weather: `Degage`, `Nuageux`, `Brouillard`, `Bruine`, `Pluie`, `Neige`, `Orage`.
+    6. **`Italian (IT)`** — Days: `Lun, Mar, Mer, Gio, Ven, Sab, Dom` | Weather: `Sereno`, `Nuvoloso`, `Nebbia`, `Pioviggine`, `Pioggia`, `Neve`, `Temporale`.
+    7. **`Portuguese (PT)`** — Days: `Seg, Ter, Qua, Qui, Sex, Sab, Dom` | Weather: `Limpo`, `Nublado`, `Nevoeiro`, `Chuvisco`, `Chuva`, `Neve`, `Tempestade`.
+    8. **`Turkish (TR)`** — Days: `Pzt, Sal, Car, Per, Cum, Cmt, Paz` | Weather: `Acik`, `Bulutlu`, `Sisli`, `Cisenti`, `Yagmur`, `Kar`, `Firtina`.
+    9. **`Dutch (NL)`** — Days: `Ma, Di, Wo, Do, Vr, Za, Zo` | Weather: `Helder`, `Bewolkt`, `Mist`, `Motregen`, `Regen`, `Sneeuw`, `Onweer`.
+- **Localized Open-Meteo City Geocoding & Unicode-to-ASCII Transliteration:**
+  - Passes the selected language code (`language=en/pl/de/es/fr/it/pt/tr/nl`) to the Open-Meteo Geocoding API and normalizes diacritics in [`src/utils.py`](src/utils.py) (`normalize_text`) so city names and weather strings render cleanly on 7-bit ASCII OLED pixel fonts (`DS-DIGIB.ttf` and `MunroSmall.ttf`) with zero missing glyphs or pixel overlap.
+- **Pixel-Accurate OLED Visual Previews in Documentation:**
+  - Added pixel-accurate 128×40 OLED preview banners in `content/demos/` (`demo_headset_battery.png`, `demo_weather_aqi.png`, `demo_multilang_oled.png`) embedded across [`README.md`](README.md).
 
 ---
 

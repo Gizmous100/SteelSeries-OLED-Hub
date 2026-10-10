@@ -50,6 +50,7 @@ class DisplayManager:
             self.user_preferences.get_preference("display_seconds"),
             self.user_preferences.get_preference("use_polish_days"),
             self.user_preferences.get_preference("clock_style"),
+            self.user_preferences.get_preference("oled_language"),
         )
 
         self.calculator = Calculator(config)
@@ -743,7 +744,12 @@ class DisplayManager:
             self.timer.set_display_seconds(self.user_preferences.get_preference("display_seconds"))
         if hasattr(self.timer, "set_date_format"):
             self.timer.set_date_format(self.user_preferences.get_preference("date_format"))
-        if hasattr(self.timer, "set_use_polish_days"):
+        if hasattr(self.timer, "set_language"):
+            self.timer.set_language(
+                self.user_preferences.get_preference("oled_language")
+                or ("PL" if self.user_preferences.get_preference("use_polish_days") else "EN")
+            )
+        elif hasattr(self.timer, "set_use_polish_days"):
             self.timer.set_use_polish_days(self.user_preferences.get_preference("use_polish_days"))
         if hasattr(self.timer, "set_style"):
             self.timer.set_style(self.user_preferences.get_preference("clock_style"))

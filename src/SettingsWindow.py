@@ -160,6 +160,17 @@ class SettingsGUI:
     DROPDOWN_MAPS = {
         "spotify_fetch_delay": {"1s (Fast)": "1", "2s (Default)": "2", "3s": "3", "5s": "5", "10s": "10"},
         "hw_polling_interval": {"500ms": "500", "1s (Default)": "1000", "2s": "2000", "5s": "5000"},
+        "oled_language": {
+            "English (EN)": "EN",
+            "Polish (PL)": "PL",
+            "German (DE)": "DE",
+            "Spanish (ES)": "ES",
+            "French (FR)": "FR",
+            "Italian (IT)": "IT",
+            "Portuguese (PT)": "PT",
+            "Turkish (TR)": "TR",
+            "Dutch (NL)": "NL",
+        },
         "weather_aqi_region": {
             "Auto (By City)": "Auto",
             "Europe (EU - CAQI)": "EU",
@@ -327,7 +338,10 @@ class SettingsGUI:
     def _init_variables(self):
         self.vars["clock_style"] = tk.StringVar(value=self.prefs.get_preference("clock_style") or "Standard")
         self.vars["display_seconds"] = tk.BooleanVar(value=bool(self.prefs.get_preference("display_seconds")))
-        self.vars["use_polish_days"] = tk.BooleanVar(value=bool(self.prefs.get_preference("use_polish_days")))
+        initial_lang = self.prefs.get_preference("oled_language") or (
+            "PL" if self.prefs.get_preference("use_polish_days") else "EN"
+        )
+        self.vars["oled_language"] = tk.StringVar(value=self._display_for("oled_language", initial_lang))
         self.vars["run_on_start"] = tk.BooleanVar(value=is_startup_enabled())
         self.vars["date_format"] = tk.BooleanVar(value=(str(self.prefs.get_preference("date_format")) == "24"))
         self.vars["player_style"] = tk.StringVar(value=self.prefs.get_preference("player_style") or "Standard")
@@ -377,7 +391,13 @@ class SettingsGUI:
         self._dropdown_row(p_gen, "Clock Design", self.vars["clock_style"], ["Standard", "Big Timer", "Date Focused", "Analog"])
         self._toggle_row(p_gen, "Use 24-Hour Format", self.vars["date_format"])
         self._toggle_row(p_gen, "Show Seconds", self.vars["display_seconds"])
-        self._toggle_row(p_gen, "Use Polish Day Abbreviations", self.vars["use_polish_days"])
+        self._dropdown_row(
+            p_gen,
+            "OLED Language (Days & Weather)",
+            self.vars["oled_language"],
+            list(self.DROPDOWN_MAPS["oled_language"].keys()),
+            width=18,
+        )
         tk.Frame(p_gen, bg=Colors.CONTENT, height=10).pack()
         self._toggle_row(p_gen, "Run on Start", self.vars["run_on_start"])
         tk.Frame(p_gen, bg=Colors.CONTENT, height=20).pack()
@@ -678,6 +698,7 @@ class SettingsGUI:
                     
                 self.prefs.preferences[k] = val
             
+            self.prefs.preferences["use_polish_days"] = (self.prefs.preferences.get("oled_language") == "PL")
             self.prefs.preferences["rgb_color"] = self.rgb
             self.prefs.save_preferences()
             set_startup(self.vars["run_on_start"].get())

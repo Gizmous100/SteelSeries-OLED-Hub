@@ -6,11 +6,61 @@ import urllib.parse
 from threading import Thread
 from PIL import Image, ImageDraw, ImageFont
 from src.image_utils import fetch_content_path
+from src.utils import normalize_text
 
 logger = logging.getLogger("OLED Customizer.Weather")
 
 class WeatherModule:
     SUPPORTED_AQI_REGIONS = ("Auto", "EU", "US", "PL", "UK", "CN", "IN", "CA", "AU")
+    SUPPORTED_LANGUAGES = ("EN", "PL", "DE", "ES", "FR", "IT", "PT", "TR", "NL")
+
+    WEATHER_TRANSLATIONS = {
+        "EN": {
+            "na": "N/A", "clear": "Clear Sky", "cloudy": "Cloudy", "fog": "Fog",
+            "drizzle": "Drizzle", "rain": "Rain", "snow": "Snow", "storm": "Storm",
+            "unknown": "Unknown", "loading": "Loading...",
+        },
+        "PL": {
+            "na": "Brak", "clear": "Bezchmurnie", "cloudy": "Zachmurzenie", "fog": "Mgla",
+            "drizzle": "Mzawka", "rain": "Deszcz", "snow": "Snieg", "storm": "Burza",
+            "unknown": "Nieznana", "loading": "Pobieranie...",
+        },
+        "DE": {
+            "na": "k.A.", "clear": "Klar", "cloudy": "Bewolkt", "fog": "Nebel",
+            "drizzle": "Niesel", "rain": "Regen", "snow": "Schnee", "storm": "Gewitter",
+            "unknown": "Unbekannt", "loading": "Laden...",
+        },
+        "ES": {
+            "na": "N/D", "clear": "Despejado", "cloudy": "Nublado", "fog": "Niebla",
+            "drizzle": "Llovizna", "rain": "Lluvia", "snow": "Nieve", "storm": "Tormenta",
+            "unknown": "Desconocido", "loading": "Cargando...",
+        },
+        "FR": {
+            "na": "N/D", "clear": "Degage", "cloudy": "Nuageux", "fog": "Brouillard",
+            "drizzle": "Bruine", "rain": "Pluie", "snow": "Neige", "storm": "Orage",
+            "unknown": "Inconnu", "loading": "Chargement...",
+        },
+        "IT": {
+            "na": "N/D", "clear": "Sereno", "cloudy": "Nuvoloso", "fog": "Nebbia",
+            "drizzle": "Pioviggine", "rain": "Pioggia", "snow": "Neve", "storm": "Temporale",
+            "unknown": "Sconosciuto", "loading": "Caricamento...",
+        },
+        "PT": {
+            "na": "N/D", "clear": "Limpo", "cloudy": "Nublado", "fog": "Nevoeiro",
+            "drizzle": "Chuvisco", "rain": "Chuva", "snow": "Neve", "storm": "Tempestade",
+            "unknown": "Desconhecido", "loading": "Carregando...",
+        },
+        "TR": {
+            "na": "Yok", "clear": "Acik", "cloudy": "Bulutlu", "fog": "Sisli",
+            "drizzle": "Cisenti", "rain": "Yagmur", "snow": "Kar", "storm": "Firtina",
+            "unknown": "Bilinmiyor", "loading": "Yukleniyor...",
+        },
+        "NL": {
+            "na": "n.v.t.", "clear": "Helder", "cloudy": "Bewolkt", "fog": "Mist",
+            "drizzle": "Motregen", "rain": "Regen", "snow": "Sneeuw", "storm": "Onweer",
+            "unknown": "Onbekend", "loading": "Laden...",
+        },
+    }
 
     def __init__(self, config, preferences):
         self.config = config
@@ -20,6 +70,12 @@ class WeatherModule:
         self.aqi_region = self.preferences.get_preference("weather_aqi_region") or "EU"
         if self.aqi_region not in self.SUPPORTED_AQI_REGIONS:
             self.aqi_region = "EU"
+        lang_pref = self.preferences.get_preference("oled_language") or (
+            "PL" if self.preferences.get_preference("use_polish_days") else "EN"
+        )
+        self.language = str(lang_pref).upper()
+        if self.language not in self.SUPPORTED_LANGUAGES:
+            self.language = "EN"
         self.enabled = bool(self.preferences.get_preference("weather_enabled"))
         
         self.lat = None
@@ -46,6 +102,13 @@ class WeatherModule:
         new_aqi_region = self.preferences.get_preference("weather_aqi_region") or "EU"
         if new_aqi_region not in self.SUPPORTED_AQI_REGIONS:
             new_aqi_region = "EU"
+        new_lang = str(
+            self.preferences.get_preference("oled_language")
+            or ("PL" if self.preferences.get_preference("use_polish_days") else "EN")
+        ).upper()
+        if new_lang not in self.SUPPORTED_LANGUAGES:
+            new_lang = "EN"
+        self.language = new_lang
         was_enabled = self.enabled
         self.enabled = bool(self.preferences.get_preference("weather_enabled"))
         
@@ -240,7 +303,8 @@ class WeatherModule:
         try:
             if self.lat is None or self.lon is None:
                 # Geocode
-                url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(self.city)}&count=1&language=en&format=json"
+                geo_lang = (self.language or "EN").lower()
+                url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(self.city)}&count=1&language={geo_lang}&format=json"
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 SteelSeries-OLED-Hub'})
                 with urllib.request.urlopen(req, timeout=5.0) as response:
                     data = json.loads(response.read().decode())
@@ -297,15 +361,16 @@ class WeatherModule:
         return None
 
     def get_weather_desc(self, code):
-        if code is None: return "N/A"
-        if code == 0: return "Clear Sky"
-        if code in [1, 2, 3]: return "Cloudy"
-        if code in [45, 48]: return "Fog"
-        if code in [51, 53, 55, 56, 57]: return "Drizzle"
-        if code in [61, 63, 65, 66, 67, 80, 81, 82]: return "Rain"
-        if code in [71, 73, 75, 77, 85, 86]: return "Snow"
-        if code in [95, 96, 99]: return "Storm"
-        return "Unknown"
+        tr = self.WEATHER_TRANSLATIONS.get(self.language, self.WEATHER_TRANSLATIONS["EN"])
+        if code is None: return tr["na"]
+        if code == 0: return tr["clear"]
+        if code in [1, 2, 3]: return tr["cloudy"]
+        if code in [45, 48]: return tr["fog"]
+        if code in [51, 53, 55, 56, 57]: return tr["drizzle"]
+        if code in [61, 63, 65, 66, 67, 80, 81, 82]: return tr["rain"]
+        if code in [71, 73, 75, 77, 85, 86]: return tr["snow"]
+        if code in [95, 96, 99]: return tr["storm"]
+        return tr["unknown"]
 
     def get_image(self):
         img = Image.new("1", (128, 40), 0)
@@ -315,8 +380,9 @@ class WeatherModule:
         self.update()
 
         if self.temperature is not None:
-            # Left side: City and description
-            draw.text((2, 2), self.city[:15].upper(), font=self.small_font, fill=1)
+            # Left side: City (normalized for ASCII pixel font) and description
+            city_display = normalize_text(self.city)[:15].upper()
+            draw.text((2, 2), city_display, font=self.small_font, fill=1)
             desc = self.get_weather_desc(self.weathercode)
             draw.text((2, 25), desc, font=self.small_font, fill=1)
             
@@ -354,7 +420,8 @@ class WeatherModule:
                 w_aqi = bbox_aqi[2] - bbox_aqi[0]
                 draw.text((126 - w_aqi, 28), aqi_text, font=self.small_font, fill=1)
         else:
-            draw.text((2, 12), "Loading...", font=self.font, fill=1)
+            tr = self.WEATHER_TRANSLATIONS.get(self.language, self.WEATHER_TRANSLATIONS["EN"])
+            draw.text((2, 12), tr["loading"], font=self.font, fill=1)
 
         return img
 

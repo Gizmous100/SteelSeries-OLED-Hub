@@ -29,6 +29,7 @@ class UserPreferences:
         "display_hw_monitor": False,
         "debug_enabled": False,
         "use_polish_days": False,
+        "oled_language": "EN",
         "clock_style": "Standard",
         "hotkey_monitor": "Key.insert",
         "hotkey_mute": "Key.pause",
@@ -98,6 +99,10 @@ class UserPreferences:
             return True
 
         modified = False
+        if "oled_language" not in self.preferences and self.preferences.get("use_polish_days"):
+            self.preferences["oled_language"] = "PL"
+            modified = True
+
         for key, value in self.DEFAULT.items():
             if key not in self.preferences:
                 self.preferences[key] = value

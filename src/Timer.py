@@ -13,11 +13,26 @@ class Timer:
         DATE_FOCUSED = "Date Focused"
         ANALOG = "Analog"
 
-    def __init__(self, config, date_format, display_seconds, use_polish_days=False, style="Standard"):
+    DAY_TRANSLATIONS = {
+        "EN": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        "PL": ["Pon", "Wt", "Sr", "Czw", "Pt", "Sob", "Nd"],
+        "DE": ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"],
+        "ES": ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"],
+        "FR": ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"],
+        "IT": ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"],
+        "PT": ["Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"],
+        "TR": ["Pzt", "Sal", "Car", "Per", "Cum", "Cmt", "Paz"],
+        "NL": ["Ma", "Di", "Wo", "Do", "Vr", "Za", "Zo"],
+    }
+
+    def __init__(self, config, date_format, display_seconds, use_polish_days=False, style="Standard", language=None):
         self.config = config
         self.date_format = int(date_format)
         self.display_seconds = display_seconds
         self.use_polish_days = use_polish_days
+        self.language = (language or ("PL" if use_polish_days else "EN")).upper()
+        if self.language not in self.DAY_TRANSLATIONS:
+            self.language = "EN"
         self.style = style
         
         # Instance-level fonts with Safety Fallbacks
@@ -202,7 +217,7 @@ class Timer:
         if self.style == self.Style.ANALOG:
             key = (self.style, now.tm_hour, now.tm_min,
                    now.tm_sec if self.display_seconds else -1,
-                   self.use_polish_days, battery, self.show_battery_percent, weather_tuple)
+                   self.language, battery, self.show_battery_percent, weather_tuple)
         else:
             key = (self.style, t_text, d_text, battery, self.show_battery_percent, weather_tuple)
 
@@ -338,15 +353,10 @@ class Timer:
         else:
             time_text = strftime("%H:%M" + seconds, current_time)
 
-        day_str = strftime("%a", current_time)
-        if self.use_polish_days:
-            mapping = {
-                "Mon": "P", "Tue": "W", "Wed": "Sr", "Thu": "C", "Fri": "Pt", "Sat": "S", "Sun": "N",
-                "Monday": "P", "Tuesday": "W", "Wednesday": "Sr", "Thursday": "C", "Friday": "Pt", "Saturday": "S", "Sunday": "N"
-            }
-            if day_str in mapping:
-                day_str = mapping[day_str]
-        
+        wday = current_time.tm_wday  # 0 = Monday .. 6 = Sunday
+        days_list = self.DAY_TRANSLATIONS.get(self.language, self.DAY_TRANSLATIONS["EN"])
+        day_str = days_list[wday] if 0 <= wday < len(days_list) else strftime("%a", current_time)
+
         date_text = f"{day_str} {strftime('%d/%m/%y', current_time)}"
 
         return time_text, normalize_text(date_text)
@@ -359,3 +369,12 @@ class Timer:
 
     def set_use_polish_days(self, use_polish_days):
         self.use_polish_days = use_polish_days
+        if use_polish_days:
+            self.language = "PL"
+        elif self.language == "PL":
+            self.language = "EN"
+
+    def set_language(self, language):
+        lang = (language or "EN").upper()
+        self.language = lang if lang in self.DAY_TRANSLATIONS else "EN"
+        self.use_polish_days = (self.language == "PL")

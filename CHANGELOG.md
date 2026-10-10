@@ -145,3 +145,4 @@ Pełna historia zmian projektu **SteelSeries OLED & RGB Hub** rozwijanego przez 
   - Motywy *Standard*, *Big Timer*, *Date Focused* oraz *Analog* z wyborem formatu 12h/24h i sekundnika.
 - **Kopie zapasowe profili SteelSeries GG (`src/ProfileBackup.py`):**
   - Tworzenie i przywracanie kopii zapasowych baz danych `engine`, `prism` oraz `sonar` wraz z funkcją kompaktowania (`VACUUM`).
+

@@ -1,4 +1,8 @@
 # UTF-8
+# type: ignore
+# pyright: reportUndefinedVariable=false
+# ruff: noqa: F821
+# flake8: noqa
 #
 # For more details about fixed file info 'ffi' see:
 # http://msdn.microsoft.com/en-us/library/ms646997.aspx
@@ -8,7 +12,7 @@ VSVersionInfo(
     # Set not needed items to zero 0.
     filevers=(1, 4, 7, 0),
     prodvers=(1, 4, 7, 0),
-    # Contains a bitmask that specifies the valid bits 'flags'r
+    # Contains a bitmask that specifies the valid bits 'flags'
     mask=0x3f,
     # Contains a bitmask that specifies the Boolean attributes of the file.
     flags=0x0,

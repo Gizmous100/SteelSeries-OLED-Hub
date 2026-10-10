@@ -497,8 +497,12 @@ class SettingsGUI:
         self._entry_row(p_adv, "Discord App ID", self.vars["discord_client_id"], width=25)
         self._entry_row(p_adv, "Discord Client Secret", self.vars["discord_client_secret"], width=25, show="*")
         self._entry_row(p_adv, "Discord Port", self.vars["discord_local_port"], width=25)
-        self.discord_btn = tk.Button(p_adv, text="🔗 Connect Discord", bg=Colors.CARD_BG, fg=Colors.TEXT_MAIN, relief="flat", cursor="hand2", command=self._authorize_discord_action)
-        self.discord_btn.pack(pady=10)
+        discord_btn_row = tk.Frame(p_adv, bg=Colors.CONTENT)
+        discord_btn_row.pack(pady=10)
+        self.discord_btn = tk.Button(discord_btn_row, text="🔗 Connect Discord", bg=Colors.CARD_BG, fg=Colors.TEXT_MAIN, font=FONT_BODY, relief="flat", cursor="hand2", padx=12, pady=4, command=self._authorize_discord_action)
+        self.discord_btn.pack(side="left", padx=5)
+        tk.Button(discord_btn_row, text="🌐 Developer Portal", bg=Colors.CARD_BG, fg=Colors.TEXT_MAIN, font=FONT_BODY, relief="flat", cursor="hand2", padx=10, pady=4, command=self._open_discord_portal).pack(side="left", padx=5)
+        tk.Button(discord_btn_row, text="📋 Copy Redirect URI", bg=Colors.CARD_BG, fg=Colors.TEXT_MAIN, font=FONT_BODY, relief="flat", cursor="hand2", padx=10, pady=4, command=self._copy_discord_redirect_uri).pack(side="left", padx=5)
         self.pages["Advanced"] = p_adv
 
         # Backups
@@ -546,13 +550,94 @@ class SettingsGUI:
         if messagebox.askyesno("Delete", "Delete backup?", parent=self.root):
             if ProfileBackup.delete_backup(path): self._refresh_backups_list()
 
+    def _get_discord_redirect_uri(self) -> str:
+        raw_port = str(self.vars["discord_local_port"].get() or "8888").strip()
+        port = int(raw_port) if raw_port.isdigit() else 8888
+        return f"http://127.0.0.1:{port}"
+
+    def _open_discord_portal(self):
+        import webbrowser
+        webbrowser.open("https://discord.com/developers/applications")
+
+    def _copy_discord_redirect_uri(self):
+        uri = self._get_discord_redirect_uri()
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(uri)
+            self.root.update()
+            messagebox.showinfo("Copied", f"Redirect URI copied to clipboard:\n\n{uri}\n\nPaste this into OAuth2 -> Redirects in the Discord Developer Portal.", parent=self.root)
+        except Exception as e:
+            logger.error(f"Clipboard copy failed: {e}")
+
     def _authorize_discord_action(self):
         import webbrowser
-        self.prefs.preferences["discord_client_id"] = self.vars["discord_client_id"].get()
+        import urllib.parse
+
+        cid = str(self.vars["discord_client_id"].get() or "").strip()
+        secret = str(self.vars["discord_client_secret"].get() or "").strip()
+        raw_port = str(self.vars["discord_local_port"].get() or "8888").strip()
+        port = int(raw_port) if raw_port.isdigit() else 8888
+        redirect_uri = f"http://127.0.0.1:{port}"
+
+        self.vars["discord_client_id"].set(cid)
+        self.vars["discord_client_secret"].set(secret)
+        self.vars["discord_local_port"].set(str(port))
+
+        if not cid or not cid.isdigit() or not (15 <= len(cid) <= 22):
+            open_portal = messagebox.askyesno(
+                "Discord App ID Required",
+                "Discord App ID is empty or invalid (Discord requires a numeric 17-20 digit Application ID / Snowflake).\n\n"
+                "How to set up Discord RPC (takes ~1 minute):\n"
+                "1. Open Discord Developer Portal (https://discord.com/developers/applications) and click 'New Application'.\n"
+                "2. Go to the 'OAuth2' tab:\n"
+                "   • Copy 'Client ID' -> paste into 'Discord App ID'\n"
+                "   • Click 'Reset Secret' -> copy & paste into 'Discord Client Secret'\n"
+                f"   • Under 'Redirects', add: {redirect_uri} and click 'Save Changes'.\n"
+                "3. Click '🔗 Connect Discord' again.\n\n"
+                "Would you like to open the Discord Developer Portal now (and copy the Redirect URI to clipboard)?",
+                parent=self.root,
+            )
+            if open_portal:
+                try:
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(redirect_uri)
+                    self.root.update()
+                except Exception:
+                    pass
+                webbrowser.open("https://discord.com/developers/applications")
+            return
+
+        if not secret:
+            messagebox.showwarning(
+                "Discord Client Secret Required",
+                "Please enter your 'Discord Client Secret' (from the OAuth2 tab in Discord Developer Portal) before connecting.\n\n"
+                f"Also make sure '{redirect_uri}' is added under OAuth2 -> Redirects in your Discord Application.",
+                parent=self.root,
+            )
+            return
+
+        prev_cid = self.prefs.preferences.get("discord_client_id")
+        self.prefs.preferences["discord_client_id"] = cid
+        self.prefs.preferences["discord_client_secret"] = secret
+        self.prefs.preferences["discord_local_port"] = port
+        if prev_cid != cid:
+            self.prefs.preferences["discord_access_token"] = ""
         self.prefs.save_preferences()
-        cid = self.vars["discord_client_id"].get()
-        port = self.vars["discord_local_port"].get()
-        url = f"https://discord.com/api/oauth2/authorize?client_id={cid}&redirect_uri=http://127.0.0.1:{port}&response_type=code&scope=rpc%20rpc.voice.read%20rpc.voice.write"
+
+        if self.on_save:
+            def _notify_bg():
+                try:
+                    self.on_save()
+                except Exception as e:
+                    logger.error(f"Discord on_save reload failed: {e}")
+            threading.Thread(target=_notify_bg, daemon=True).start()
+
+        encoded_redirect = urllib.parse.quote(redirect_uri, safe="")
+        url = (
+            f"https://discord.com/api/oauth2/authorize?client_id={cid}"
+            f"&redirect_uri={encoded_redirect}"
+            f"&response_type=code&scope=rpc%20rpc.voice.read%20rpc.voice.write"
+        )
         webbrowser.open(url)
 
     def _switch_page(self, name):

@@ -1539,9 +1539,9 @@ class DisplayManager:
                             
                         self._discord_disconnect_ts = 0.0
                         
-                        # Initial poll right after connecting
+                        # Initial poll right after connecting (only if already authenticated)
                         voice = self._discord_ipc.get_voice_settings()
-                        if voice:
+                        if voice and self._discord_ipc._authenticated:
                             # Establish initial baseline so the first loop iteration doesn't think it's a 'change'
                             initial_mute = bool(voice["mute"] or voice["deaf"])
                             self._last_discord_state = initial_mute

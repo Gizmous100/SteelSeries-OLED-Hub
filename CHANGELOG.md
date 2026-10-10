@@ -4,7 +4,19 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 **Project Versioning Policy:**
 - **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.48`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.49`).
+
+---
+
+## [`v1.49`] — 2026-10-10 — Discord RPC OAuth Validation, Setup Helpers & Initial Sync Fix
+### ✨ Improvements & Fixes (`+0.01`)
+- **Discord Snowflake ID & Client Secret Validation (`Settings → Advanced → 🎙️ Discord & Diagnostics`):**
+  - Fixed the `{"client_id": ["Value '' is not a snowflake."]}` error when clicking **🔗 Connect Discord** before entering a valid 17–20 digit Discord Application ID (`discord_client_id`).
+  - Added automatic validation of `Discord App ID` and `Discord Client Secret` with an interactive setup guide, plus **🌐 Developer Portal** and **📋 Copy Redirect URI** (`http://127.0.0.1:8888`) helper buttons in [`src/SettingsWindow.py`](src/SettingsWindow.py).
+- **Immediate Persistence & Live IPC Reload on Connect:**
+  - Fixed a bug where clicking **🔗 Connect Discord** only saved `discord_client_id` without saving `discord_client_secret` or `discord_local_port` and without reloading `DisplayManager._discord_ipc`, which previously caused OAuth code exchange to fail unless Settings were manually saved and closed first.
+- **Discord IPC Initial Voice State & Token Exchange Hardening:**
+  - Fixed [`src/DisplayManager.py`](src/DisplayManager.py) so initial mute/deaf baseline state is only established after `_authenticated` is `True`, and updated [`src/DiscordRPC.py`](src/DiscordRPC.py) to immediately request `GET_VOICE_SETTINGS` upon subscribing.
 
 ---
 

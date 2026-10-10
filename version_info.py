@@ -10,8 +10,8 @@ VSVersionInfo(
   ffi=FixedFileInfo(
     # filevers and prodvers should be always a tuple with four items: (1, 2, 3, 4)
     # Set not needed items to zero 0.
-    filevers=(1, 4, 8, 0),
-    prodvers=(1, 4, 8, 0),
+    filevers=(1, 4, 9, 0),
+    prodvers=(1, 4, 9, 0),
     # Contains a bitmask that specifies the valid bits 'flags'
     mask=0x3f,
     # Contains a bitmask that specifies the Boolean attributes of the file.
@@ -35,9 +35,9 @@ VSVersionInfo(
         '040904B0',
         [StringStruct('CompanyName', 'gizmous'),
         StringStruct('FileDescription', 'SteelSeries OLED & RGB Hub by gizmous (orig. 0z-zy)'),
-        StringStruct('FileVersion', '1.48.0.0'),
+        StringStruct('FileVersion', '1.49.0.0'),
         StringStruct('ProductName', 'SteelSeries OLED & RGB Hub'),
-        StringStruct('ProductVersion', '1.48.0.0'),
+        StringStruct('ProductVersion', '1.49.0.0'),
         StringStruct('LegalCopyright', 'gizmous (original author: 0z-zy / Firewee)')])
       ]), 
     VarFileInfo([VarStruct('Translation', [1033, 1200])])

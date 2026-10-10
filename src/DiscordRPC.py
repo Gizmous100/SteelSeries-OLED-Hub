@@ -88,23 +88,63 @@ class DiscordIPC:
                 continue
         return False
 
+    @staticmethod
+    def is_valid_snowflake(client_id) -> bool:
+        raw = str(client_id or "").strip()
+        return raw.isdigit() and (15 <= len(raw) <= 22)
+
     def _handshake(self):
         try:
             self._send(self.OP_HANDSHAKE, {"v": 1, "client_id": self.client_id})
             resp = self._recv(timeout=2.0)
             if resp and resp.get("evt") == "READY":
-                self._user_tag = resp['data']['user']['username']
+                self._user_tag = resp.get("data", {}).get("user", {}).get("username")
                 logger.info(f"Discord Handshake OK - user: {self._user_tag}")
                 return True
+            logger.warning(f"Discord Handshake rejected by client: {resp}")
             return False
         except Exception as e:
             logger.debug(f"Handshake failed: {e}")
             return False
 
+    def trigger_ipc_authorize(self) -> bool:
+        """Send an in-app AUTHORIZE request over Discord IPC so Discord Desktop
+        opens its native authorization modal directly."""
+        if not self.is_valid_snowflake(self.client_id):
+            return False
+        if not self.is_connected:
+            if not self.connect():
+                return False
+        try:
+            self._send(self.OP_FRAME, {
+                "cmd": "AUTHORIZE",
+                "args": {
+                    "client_id": self.client_id,
+                    "scopes": ["rpc", "rpc.voice.read", "rpc.voice.write"],
+                },
+                "nonce": str(uuid.uuid4()),
+            })
+            logger.info("Sent in-app AUTHORIZE request to Discord IPC")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to send IPC AUTHORIZE: {e}")
+            return False
+
+    def _complete_code_exchange(self, code) -> bool:
+        new_token = self._exchange_code(code)
+        if new_token and self.prefs:
+            self.prefs.preferences["discord_access_token"] = new_token
+            self.prefs.save_preferences()
+            if self._authenticate(new_token):
+                self._authenticated = True
+                self._subscribe()
+                return True
+        return False
+
     def _try_authenticate(self):
         """Perform AUTHORIZE/AUTHENTICATE flow to get voice access."""
         if not self.prefs:
-            return
+            return False
 
         token = self.prefs.get_preference("discord_access_token")
         
@@ -125,20 +165,14 @@ class DiscordIPC:
         if not token and self.extension_receiver:
             code = self.extension_receiver.get_discord_code()
             if code:
-                logger.info("Discord: Found captured Auth Code from extension, exchanging for token...")
-                new_token = self._exchange_code(code)
-                if new_token:
-                    self.prefs.preferences["discord_access_token"] = new_token
-                    self.prefs.save_preferences()
-                    if self._authenticate(new_token):
-                        self._authenticated = True
-                        self._subscribe()
-                        return True
+                logger.info("Discord: Found captured Auth Code from localhost callback, exchanging for token...")
+                if self._complete_code_exchange(code):
+                    return True
         return False
 
     def _exchange_code(self, code):
         """Exchange OAuth code for access_token via Discord API."""
-        secret = self.prefs.get_preference("discord_client_secret")
+        secret = (self.prefs.get_preference("discord_client_secret") or "").strip()
         if not secret:
             logger.error("Discord Client Secret missing — cannot exchange code")
             return None
@@ -147,24 +181,30 @@ class DiscordIPC:
         host = self.prefs.get_preference("discord_redirect_host") or "127.0.0.1"
         redirect_uri = f"http://{host}:{port}"
 
-        try:
-            resp = requests.post("https://discord.com/api/oauth2/token", data={
+        for payload in (
+            {
                 "client_id": self.client_id,
                 "client_secret": secret,
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": redirect_uri
-            }, timeout=5)
-            
-            data = resp.json()
-            if "access_token" in data:
-                return data["access_token"]
-            else:
-                logger.error(f"Discord Token Exchange failed: {data}")
-                return None
-        except Exception as e:
-            logger.error(f"Discord Token Exchange error: {e}")
-            return None
+                "redirect_uri": redirect_uri,
+            },
+            {
+                "client_id": self.client_id,
+                "client_secret": secret,
+                "grant_type": "authorization_code",
+                "code": code,
+            },
+        ):
+            try:
+                resp = requests.post("https://discord.com/api/oauth2/token", data=payload, timeout=5)
+                data = resp.json()
+                if "access_token" in data:
+                    return data["access_token"]
+                logger.warning(f"Discord Token Exchange attempt failed: {data}")
+            except Exception as e:
+                logger.error(f"Discord Token Exchange error: {e}")
+        return None
 
     def _authenticate(self, token):
         """Send AUTHENTICATE command with the token."""
@@ -184,12 +224,17 @@ class DiscordIPC:
             return False
 
     def _subscribe(self):
-        """Subscribe to voice settings and channel selection updates."""
+        """Subscribe to voice settings and immediately request initial voice state."""
         try:
             # Voice settings (mute/deaf)
             self._send(self.OP_FRAME, {
                 "cmd": "SUBSCRIBE",
                 "evt": "VOICE_SETTINGS_UPDATE",
+                "args": {},
+                "nonce": str(uuid.uuid4())
+            })
+            self._send(self.OP_FRAME, {
+                "cmd": "GET_VOICE_SETTINGS",
                 "args": {},
                 "nonce": str(uuid.uuid4())
             })
@@ -264,10 +309,15 @@ class DiscordIPC:
                     "deaf": bool(data.get("deaf", False))
                 }
                 logger.debug(f"Discord RPC: Event VOICE_SETTINGS_UPDATE -> {self._last_voice_state}")
+            elif cmd == "AUTHORIZE" and evt != "ERROR":
+                code = data.get("code")
+                if code:
+                    logger.info("Discord RPC: Received in-app AUTHORIZE code, exchanging for token...")
+                    self._complete_code_exchange(code)
             elif cmd == "SET_VOICE_SETTINGS" and evt == "ERROR":
                 logger.error(f"Discord RPC: Failed to set voice settings: {data.get('message', 'Unknown error')}")
             elif evt == "ERROR":
-                logger.error(f"Discord RPC: Generic Error: {data.get('message', 'Unknown error')}")
+                logger.error(f"Discord RPC: Generic Error ({cmd}): {data.get('message', 'Unknown error')}")
             elif cmd == "GET_VOICE_SETTINGS" and not evt == "ERROR":
                 self._last_voice_state = {
                     "mute": bool(data.get("mute", False)),

@@ -116,6 +116,7 @@ def set_startup(enable: bool):
                 ["powershell", "-Command", ps_cmd],
                 capture_output=True,
                 text=True,
+                errors="replace",
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
             
@@ -187,7 +188,6 @@ def is_startup_enabled() -> bool:
             result = subprocess.run(
                 ['schtasks', '/query', '/tn', task_name],
                 capture_output=True,
-                text=True,
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
             if result.returncode == 0:

@@ -98,11 +98,8 @@ Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.47`)
 ---
 
 ## 📈 Version History (`v1.00` → `v1.47`)
-<<<<<<< HEAD
 
 > 📄 **Pełny szczegółowy opis wszystkich zmian od początku projektu znajduje się w pliku [`CHANGELOG.md`](CHANGELOG.md).**
-=======
->>>>>>> 8ee9e8b763c0ddbdd51fb51cdf6a0a154a50d61f
 
 | Version | Category | Summary of Changes |
 | :--- | :---: | :--- |

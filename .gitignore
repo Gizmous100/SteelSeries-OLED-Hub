@@ -1,0 +1,50 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments & IDE
+.env
+venv/
+.venv/
+.idea/
+.vscode/
+
+# PyInstaller build outputs & binaries (upload SteelSeries-OLED-Hub.exe to GitHub Releases instead)
+dist/
+build/
+*.exe
+*.old
+*.new
+
+# Temporary / local / scratch files
+AGENTS.md
+plan.md
+scratch_*.py
+check_*.ps1
+get_caps.py
+req.txt
+requirements_ascii.txt
+run_err.txt
+run_out.txt
+sqlite.zip
+sqlite_tmp/
+extension/
+extension.zip
+OLED-Sync-Extension.zip
+lite_backup.zip
+
+# User-specific runtime files
+config.json
+config.json.bad
+credentials.json
+yt_nowplaying.json
+*.pem
+*.crx
+.lock
+debug.log*
+crash.log
+fault.log
+debug_fs.txt
+build.ps1
+tools/

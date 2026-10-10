@@ -1,0 +1,361 @@
+from PIL import ImageFont, ImageDraw, Image
+from time import localtime, strftime
+import math
+
+from src.image_utils import fetch_content_path
+from src.utils import normalize_text
+
+
+class Timer:
+    class Style:
+        STANDARD = "Standard"
+        BIG = "Big Timer"
+        DATE_FOCUSED = "Date Focused"
+        ANALOG = "Analog"
+
+    def __init__(self, config, date_format, display_seconds, use_polish_days=False, style="Standard"):
+        self.config = config
+        self.date_format = int(date_format)
+        self.display_seconds = display_seconds
+        self.use_polish_days = use_polish_days
+        self.style = style
+        
+        # Instance-level fonts with Safety Fallbacks
+        def safe_load_font(path, size):
+            try:
+                return ImageFont.truetype(font=path, size=size)
+            except Exception:
+                try:
+                    return ImageFont.load_default()
+                except Exception:
+                    return None
+
+        self._digi_path = fetch_content_path('fonts/DS-DIGIB.ttf')
+        self._digi_fonts = {}
+        for sz in range(10, 31):
+            self._digi_fonts[sz] = safe_load_font(self._digi_path, sz)
+
+        self.FONT_DIGI_BIG = self._digi_fonts[20]
+        self.FONT_DIGI_MED = self._digi_fonts[16]
+        self.FONT_DIGI_SMALL = self._digi_fonts[12]
+        self.FONT_HUGE = self._digi_fonts[30]
+        # Deliberately NOT the DS-DIGI face: it is a 7-segment LCD font whose
+        # digits break into disconnected bars at small sizes ('5' especially).
+        # VerdanaBold at 9px stays solid and renders "100" at 18px — almost
+        # exactly the battery icon's width, so it centres cleanly underneath.
+        self.FONT_BATT = safe_load_font(fetch_content_path('fonts/VerdanaBold.ttf'), 9)
+        self.FONT_NARROW = safe_load_font(fetch_content_path('fonts/MunroSmall.ttf'), 10)
+
+        # The clock changes at most once per second but get_image is called at
+        # display FPS (10x/sec) — cache the rendered frame per displayed state.
+        self._cache_key = None
+        self._cached_image = None
+
+        # Headset battery & weather widgets injected by DisplayManager
+        self.show_battery = False
+        self.show_battery_percent = False   # icon only unless enabled
+        self.battery_getter = None
+        self.weather_getter = None
+
+    def set_style(self, style):
+        self.style = style
+
+    def _get_digi_font(self, size):
+        size = max(10, min(30, int(size)))
+        return self._digi_fonts.get(size, self.FONT_DIGI_SMALL)
+
+    @staticmethod
+    def _measure_fixed_width(font, text):
+        w0 = font.getlength("0")
+        total_w = 0.0
+        for c in text:
+            total_w += w0 if c.isdigit() else font.getlength(c)
+        return total_w
+
+    def _fit_fixed_width_font(self, text, max_size, min_size, max_width):
+        for sz in range(max_size, min_size - 1, -1):
+            font = self._get_digi_font(sz)
+            if self._measure_fixed_width(font, text) <= max_width:
+                return font
+        return self._get_digi_font(min_size)
+
+    def _fit_text_font(self, text, max_size, min_size, max_width):
+        for sz in range(max_size, min_size - 1, -1):
+            font = self._get_digi_font(sz)
+            if font.getlength(text) <= max_width:
+                return font
+        return self._get_digi_font(min_size)
+
+    def _battery(self):
+        if not self.show_battery or not callable(self.battery_getter):
+            return None
+        try:
+            val = self.battery_getter()
+        except Exception:
+            return None
+        return val if isinstance(val, int) and 0 <= val <= 100 else None
+
+    def _weather(self):
+        if not callable(self.weather_getter):
+            return None
+        try:
+            data = self.weather_getter()
+            if data and data.get("temp") is not None:
+                temp = int(round(data["temp"]))
+                code = data.get("code")
+                aqi = int(round(data["aqi"])) if data.get("aqi") is not None else None
+                return (temp, code, aqi)
+        except Exception:
+            pass
+        return None
+
+    def _draw_battery(self, draw, pct):
+        """Vertical headset battery, top-right, level printed under it."""
+        w = self.config.width
+        on, off = self.config.primary, self.config.secondary
+
+        x1 = w - 4
+        x0 = x1 - 10
+        top = 3
+        bot = 21
+
+        # Clear only the battery column (x = 110..127)
+        draw.rectangle((x0 - 4, 0, w - 1, 39 if self.show_battery_percent else 24), fill=off)
+
+        # Body and Nub
+        draw.rectangle((x0, top, x1, bot), outline=on)
+        draw.rectangle((x0 + 3, top - 2, x1 - 3, top), fill=on)
+
+        # 4 discrete segments
+        SEGMENTS, SEG_H, GAP = 4, 3, 1
+        lit = max(0, min(SEGMENTS, -(-max(0, min(100, pct)) // (100 // SEGMENTS))))
+        for i in range(lit):
+            seg_bot = (bot - 2) - i * (SEG_H + GAP)
+            seg_top = seg_bot - SEG_H + 1
+            draw.rectangle((x0 + 2, seg_top, x1 - 2, seg_bot), fill=on)
+
+        # Level centred under the icon
+        if self.show_battery_percent:
+            draw.text(((x0 + x1) // 2, bot + 2), str(pct), font=self.FONT_BATT,
+                      fill=on, anchor="mt")
+
+    def _draw_weather(self, draw, weather_tuple):
+        """Compact weather icon, AQI, and temperature on the left column (x = 0..30)."""
+        temp, code, aqi = weather_tuple
+        on = self.config.primary
+        ix, iy = 16, 9
+
+        if code == 0:
+            draw.ellipse((ix - 3, iy - 3, ix + 3, iy + 3), outline=on)
+        elif code in [1, 2, 3]:
+            draw.ellipse((ix - 5, iy - 1, ix - 1, iy + 3), outline=on)
+            draw.ellipse((ix - 2, iy - 4, ix + 4, iy + 2), outline=on)
+        elif code in [61, 63, 65, 80, 81, 82]:
+            draw.ellipse((ix - 5, iy - 5, ix + 5, iy - 1), outline=on)
+            draw.line((ix - 2, iy + 1, ix - 3, iy + 4), fill=on)
+            draw.line((ix + 1, iy + 1, ix, iy + 4), fill=on)
+        elif code in [71, 73, 75, 85, 86]:
+            draw.text((ix - 3, iy - 6), "*", font=self.FONT_BATT, fill=on)
+        elif code in [95, 96, 99]:
+            draw.polygon([(ix, iy - 5), (ix - 2, iy), (ix + 1, iy - 1), (ix - 1, iy + 4)], fill=on)
+        else:
+            draw.ellipse((ix - 2, iy - 2, ix + 2, iy + 2), outline=on)
+
+        if aqi is not None:
+            aqi_str = f"AQI:{aqi}" if aqi >= 100 else f"AQI: {aqi}"
+            draw.text((ix, iy + 10), aqi_str, font=self.FONT_NARROW, fill=on, anchor="mm")
+
+        draw.text((ix, iy + 20), f"{temp}°", font=self.FONT_BATT, fill=on, anchor="mm")
+
+    def _draw_fixed_width_text(self, draw, cx, cy, text, font, fill, anchor="mm"):
+        # Oblicz stałe szerokości dla cyfr, aby zapobiec skakaniu
+        w0 = font.getlength("0")
+        total_w = self._measure_fixed_width(font, text)
+
+        if anchor.startswith("m"):
+            x = cx - total_w / 2
+        else:
+            x = cx
+
+        bbox = font.getbbox("0")
+        h = bbox[3] - bbox[1]
+
+        if anchor.endswith("m"):
+            y = cy - h / 2 - bbox[1]
+        else:
+            y = cy
+
+        # Rysuj znak po znaku
+        for c in text:
+            cw = font.getlength(c)
+            cell_w = w0 if c.isdigit() else cw
+            x_offset = (cell_w - cw) if c.isdigit() else 0
+            draw.text((x + x_offset, y), c, font=font, fill=fill, anchor="lt")
+            x += cell_w
+
+    def get_image(self):
+        battery = self._battery()
+        weather_tuple = self._weather()
+        now = localtime()
+        t_text, d_text = self.get_current_time()
+
+        if self.style == self.Style.ANALOG:
+            key = (self.style, now.tm_hour, now.tm_min,
+                   now.tm_sec if self.display_seconds else -1,
+                   self.use_polish_days, battery, self.show_battery_percent, weather_tuple)
+        else:
+            key = (self.style, t_text, d_text, battery, self.show_battery_percent, weather_tuple)
+
+        if key == self._cache_key and self._cached_image is not None:
+            return self._cached_image
+
+        image = Image.new(
+            mode="1",
+            size=(self.config.width, self.config.height),
+            color=self.config.secondary
+        )
+        draw = ImageDraw.Draw(image)
+
+        # Compute horizontal safe bounds based on which side widgets are active:
+        # - Weather occupies x = 0..31 on the left when active
+        # - Battery occupies x = 110..127 on the right when active
+        x_left = 32 if weather_tuple is not None else 2
+        x_right = 109 if battery is not None else (self.config.width - 2)
+        avail_w = max(40, x_right - x_left)
+        cx = (x_left + x_right) / 2.0
+        cy = self.config.height / 2.0
+
+        # === ANALOG STYLE ===
+        if self.style == self.Style.ANALOG:
+            current_time = localtime()
+            radius = 17 if (weather_tuple is not None and battery is not None) else 18
+            day_label = d_text.split(" ")[0]
+            day_w = self.FONT_DIGI_SMALL.getlength(day_label)
+            gap = 6
+            group_w = (2 * radius) + gap + day_w
+            group_x0 = cx - (group_w / 2.0)
+            acx = group_x0 + radius
+            day_cx = group_x0 + (2 * radius) + gap + (day_w / 2.0)
+
+            # Draw Clock Face (Circle) and Center Dot
+            draw.ellipse((acx - radius, cy - radius, acx + radius, cy + radius), outline=self.config.primary)
+            draw.ellipse((acx - 1, cy - 1, acx + 1, cy + 1), fill=self.config.primary)
+
+            hour_angle = math.radians((current_time.tm_hour % 12 + current_time.tm_min / 60) * 30 - 90)
+            minute_angle = math.radians(current_time.tm_min * 6 - 90)
+            second_angle = math.radians(current_time.tm_sec * 6 - 90)
+
+            # Hour Hand (Shorter)
+            hour_len = 10
+            hx = acx + hour_len * math.cos(hour_angle)
+            hy = cy + hour_len * math.sin(hour_angle)
+            draw.line((acx, cy, hx, hy), fill=self.config.primary, width=2)
+
+            # Minute Hand (Longer)
+            min_len = radius - 3
+            mx = acx + min_len * math.cos(minute_angle)
+            my = cy + min_len * math.sin(minute_angle)
+            draw.line((acx, cy, mx, my), fill=self.config.primary, width=1)
+
+            # Second Hand (Thin, if enabled)
+            if self.display_seconds:
+                sec_len = radius - 2
+                sx = acx + sec_len * math.cos(second_angle)
+                sy = cy + sec_len * math.sin(second_angle)
+                draw.line((acx, cy, sx, sy), fill=self.config.primary, width=1)
+
+            # Day Name to the right of the analog dial
+            draw.text((day_cx, cy), day_label, font=self.FONT_DIGI_SMALL, fill=self.config.primary, anchor="mm")
+
+        elif self.style == self.Style.BIG:
+            # === BIG STYLE: HUGE TIME, NO DATE (auto-fitted to available width) ===
+            big_font = self._fit_fixed_width_font(time_text=t_text, max_size=30, min_size=14, max_width=avail_w - 2) if False else self._fit_fixed_width_font(t_text, 30, 14, avail_w - 2)
+            self._draw_fixed_width_text(
+                draw, cx, cy,
+                t_text,
+                font=big_font,
+                fill=self.config.primary,
+                anchor="mm"
+            )
+
+        elif self.style == self.Style.DATE_FOCUSED:
+            # === DATE FOCUSED: BIG DATE, SMALL TIME (auto-fitted to available width) ===
+            date_font = self._fit_text_font(d_text, 16, 11, avail_w - 2)
+            time_font = self._fit_fixed_width_font(t_text, 12, 10, avail_w - 2)
+            draw.text(
+                (cx, cy - 8),
+                d_text,
+                font=date_font,
+                fill=self.config.primary,
+                anchor="mm"
+            )
+            self._draw_fixed_width_text(
+                draw, cx, cy + 12,
+                t_text,
+                font=time_font,
+                fill=self.config.primary,
+                anchor="mm"
+            )
+
+        else:
+            # === STANDARD STYLE (Default, auto-fitted to available width) ===
+            time_font = self._fit_fixed_width_font(t_text, 20, 12, avail_w - 2)
+            date_font = self._fit_text_font(d_text, 12, 10, avail_w - 2)
+            self._draw_fixed_width_text(
+                draw, cx, cy - 6,
+                t_text,
+                font=time_font,
+                fill=self.config.primary,
+                anchor="mm"
+            )
+            draw.text(
+                (cx, cy + 10),
+                d_text,
+                font=date_font,
+                fill=self.config.primary,
+                anchor="mm"
+            )
+
+        if weather_tuple is not None:
+            self._draw_weather(draw, weather_tuple)
+
+        if battery is not None:
+            self._draw_battery(draw, battery)
+
+        self._cache_key = key
+        self._cached_image = image
+        return image
+
+    def get_current_time(self):
+        current_time = localtime()
+        seconds = ":%S" if self.display_seconds else ""
+
+        hour_24 = current_time.tm_hour
+        am_pm = "AM" if hour_24 < 12 else "PM"
+
+        if self.date_format == 12:
+            time_text = strftime("%I:%M" + seconds, current_time) + f" {am_pm}"
+        else:
+            time_text = strftime("%H:%M" + seconds, current_time)
+
+        day_str = strftime("%a", current_time)
+        if self.use_polish_days:
+            mapping = {
+                "Mon": "P", "Tue": "W", "Wed": "Sr", "Thu": "C", "Fri": "Pt", "Sat": "S", "Sun": "N",
+                "Monday": "P", "Tuesday": "W", "Wednesday": "Sr", "Thursday": "C", "Friday": "Pt", "Saturday": "S", "Sunday": "N"
+            }
+            if day_str in mapping:
+                day_str = mapping[day_str]
+        
+        date_text = f"{day_str} {strftime('%d/%m/%y', current_time)}"
+
+        return time_text, normalize_text(date_text)
+
+    def set_display_seconds(self, display_seconds):
+        self.display_seconds = display_seconds
+
+    def set_date_format(self, date_format):
+        self.date_format = date_format if date_format == 12 else 24
+
+    def set_use_polish_days(self, use_polish_days):
+        self.use_polish_days = use_polish_days

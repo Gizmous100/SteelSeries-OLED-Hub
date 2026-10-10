@@ -8,8 +8,8 @@ from version import __version__
 
 logger = logging.getLogger("OLED Customizer.Updater")
 
-REPO_RAW_URL = "https://raw.githubusercontent.com/gizmous/SteelSeries_OLED_Hub/main/version.py"
-RELEASE_EXE_URL = "https://github.com/gizmous/SteelSeries_OLED_Hub/releases/latest/download/SteelSeries-OLED-Hub.exe"
+REPO_RAW_URL = "https://raw.githubusercontent.com/Gizmous100/SteelSeries-OLED-Hub/main/version.py"
+RELEASE_EXE_URL = "https://github.com/Gizmous100/SteelSeries-OLED-Hub/releases/latest/download/SteelSeries-OLED-Hub.exe"
 
 def get_latest_version():
     """Fetches the latest version string from the GitHub repo."""

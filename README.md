@@ -13,7 +13,7 @@
 > [!NOTE]
 > ### 💡 Inspiration & Project Heritage
 > **SteelSeries OLED & RGB Hub (`v1.47`)** is **heavily inspired by the original [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) created by [0z-zy](https://github.com/0z-zy)** (and the foundational [SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker) by **[Firewee](https://github.com/Firewee)**).  
-> It **retains and includes all features of the original application** (Spotify & Windows SMTC media dashboard, CPU/GPU/RAM/FPS Ghost-Monitor, adaptive volume control, Discord RPC & global mic mute, OLED calculator, 4 clock themes, and SteelSeries profile backups), while being significantly expanded by **[gizmous](https://github.com/gizmous)** with brand-new wireless headset battery telemetry, live weather & multi-region global AQI, smart AFK power-saving with gamepad detection, 10-zone mouse RGB & profile sync, and anti-jitter adaptive rendering.
+> It **retains and includes all features of the original application** (Spotify & Windows SMTC media dashboard, CPU/GPU/RAM/FPS Ghost-Monitor, adaptive volume control, Discord RPC & global mic mute, OLED calculator, 4 clock themes, and SteelSeries profile backups), while being significantly expanded by **[gizmous](https://github.com/Gizmous100)** with brand-new wireless headset battery telemetry, live weather & multi-region global AQI, smart AFK power-saving with gamepad detection, 10-zone mouse RGB & profile sync, and anti-jitter adaptive rendering.
 
 ---
 
@@ -178,14 +178,14 @@ Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.47`)
 > **Administrator Privileges**: Run the application as Administrator to enable hardware temperature sensors (LibreHardwareMonitor) and live game FPS (PresentMon). Enabling **"Run on Start"** automatically creates an elevated Windows Task Scheduler task.
 
 ### 1. Standalone Executable
-1. Download **`SteelSeries-OLED-Hub.exe`** from [Releases](https://github.com/gizmous/SteelSeries_OLED_Hub/releases).
+1. Download **`SteelSeries-OLED-Hub.exe`** from [Releases](https://github.com/Gizmous100/SteelSeries-OLED-Hub/releases).
 2. Launch `SteelSeries-OLED-Hub.exe` — the app will appear in your System Tray.
 3. Right-click the tray icon and select **⚙️ Settings...** to customize your display, weather city, AQI region/standard, headset battery, hotkeys, and RGB color.
 
 ### 2. Running or Building from Source
 ```powershell
-git clone https://github.com/gizmous/SteelSeries_OLED_Hub.git
-cd SteelSeries_OLED_Hub
+git clone https://github.com/Gizmous100/SteelSeries-OLED-Hub.git
+cd SteelSeries-OLED-Hub
 pip install -r requirements.txt
 
 # Run from source:
@@ -231,10 +231,10 @@ SteelSeries_OLED_Hub/
 
 **SteelSeries OLED & RGB Hub (`v1.47`)** stands on the shoulders of great open-source projects and **includes all features of the original application** alongside major new expansions:
 
-- **Author & Maintainer (`v1.47`)**: **[gizmous](https://github.com/gizmous)** — author of the `v1.10`–`v1.47` expansions (Wireless Headset Battery HID, Live Weather & Multi-Region Global AQI, Smart AFK + XInput Gamepad detection, Auto-Game Hardware Monitor, 10-Zone Mouse RGB & GG Config Sync, SMTC/Prime Video Hysteresis, and Adaptive Anti-Jitter Clock Layouts).
+- **Author & Maintainer (`v1.47`)**: **[gizmous](https://github.com/Gizmous100)** — author of the `v1.10`–`v1.47` expansions (Wireless Headset Battery HID, Live Weather & Multi-Region Global AQI, Smart AFK + XInput Gamepad detection, Auto-Game Hardware Monitor, 10-Zone Mouse RGB & GG Config Sync, SMTC/Prime Video Hysteresis, and Adaptive Anti-Jitter Clock Layouts).
 - **Original Application & Inspiration**: **[0z-zy](https://github.com/0z-zy)** — creator of the original [OLED Customizer](https://github.com/0z-zy/OLED_Customizer), which served as the direct inspiration and base for this project. All original features created by **0z-zy** are fully preserved in this edition.
 - **Foundational Inspiration**: **[Firewee](https://github.com/Firewee)** — creator of [SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker), whose core OLED & Spotify integration inspired the original project.
 
 ---
 
-**Developed and Expanded by [gizmous](https://github.com/gizmous) (`v1.47`) • Includes all original features & heavily inspired by [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) by [0z-zy](https://github.com/0z-zy) & [Firewee](https://github.com/Firewee).**
+**Developed and Expanded by [gizmous](https://github.com/Gizmous100) (`v1.47`) • Includes all original features & heavily inspired by [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) by [0z-zy](https://github.com/0z-zy) & [Firewee](https://github.com/Firewee).**

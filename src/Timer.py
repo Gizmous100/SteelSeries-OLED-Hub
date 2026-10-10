@@ -168,7 +168,7 @@ class Timer:
         draw.text((ix, iy + 20), f"{temp}°", font=self.FONT_BATT, fill=on, anchor="mm")
 
     def _draw_fixed_width_text(self, draw, cx, cy, text, font, fill, anchor="mm"):
-        # Oblicz stałe szerokości dla cyfr, aby zapobiec skakaniu
+        # Calculate fixed character widths for digits to prevent horizontal jitter
         w0 = font.getlength("0")
         total_w = self._measure_fixed_width(font, text)
 
@@ -185,7 +185,7 @@ class Timer:
         else:
             y = cy
 
-        # Rysuj znak po znaku
+        # Draw character by character
         for c in text:
             cw = font.getlength(c)
             cell_w = w0 if c.isdigit() else cw

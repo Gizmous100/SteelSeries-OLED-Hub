@@ -56,7 +56,7 @@ class UserPreferences:
         "show_headset_battery": False,
         "show_battery_percent": False,
         "weather_enabled": False,
-        "weather_city": "Warszawa",
+        "weather_city": "Warsaw",
         "weather_aqi_region": "EU",
         "weather_display_time": 5,
         "hotkey_weather": "Key.f8"

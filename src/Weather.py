@@ -16,7 +16,7 @@ class WeatherModule:
         self.config = config
         self.preferences = preferences
         
-        self.city = self.preferences.get_preference("weather_city") or "Warszawa"
+        self.city = self.preferences.get_preference("weather_city") or "Warsaw"
         self.aqi_region = self.preferences.get_preference("weather_aqi_region") or "EU"
         if self.aqi_region not in self.SUPPORTED_AQI_REGIONS:
             self.aqi_region = "EU"
@@ -42,7 +42,7 @@ class WeatherModule:
 
     def update_preferences(self, preferences):
         self.preferences = preferences
-        new_city = self.preferences.get_preference("weather_city") or "Warszawa"
+        new_city = self.preferences.get_preference("weather_city") or "Warsaw"
         new_aqi_region = self.preferences.get_preference("weather_aqi_region") or "EU"
         if new_aqi_region not in self.SUPPORTED_AQI_REGIONS:
             new_aqi_region = "EU"
@@ -140,7 +140,7 @@ class WeatherModule:
             return
 
         if region == "PL":
-            # Polish GIOŚ Air Quality Index mapped to 0-100+ scale
+            # Polish GIOS Air Quality Index mapped to 0-100+ scale
             pl_Subs = []
             if pm25 is not None:
                 pl_Subs.append(self._piecewise_linear(pm25, [(0, 13, 0, 20), (13, 35, 20, 40), (35, 55, 40, 60), (55, 75, 60, 80), (75, 110, 80, 100), (110, 150, 100, 125)]))
@@ -240,7 +240,7 @@ class WeatherModule:
         try:
             if self.lat is None or self.lon is None:
                 # Geocode
-                url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(self.city)}&count=1&language=pl&format=json"
+                url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(self.city)}&count=1&language=en&format=json"
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 SteelSeries-OLED-Hub'})
                 with urllib.request.urlopen(req, timeout=5.0) as response:
                     data = json.loads(response.read().decode())
@@ -297,15 +297,15 @@ class WeatherModule:
         return None
 
     def get_weather_desc(self, code):
-        if code is None: return "Brak"
-        if code == 0: return "Bezchmurnie"
-        if code in [1, 2, 3]: return "Zachmurzenie"
-        if code in [45, 48]: return "Mgla"
-        if code in [51, 53, 55, 56, 57]: return "Mzawka"
-        if code in [61, 63, 65, 66, 67, 80, 81, 82]: return "Deszcz"
-        if code in [71, 73, 75, 77, 85, 86]: return "Snieg"
-        if code in [95, 96, 99]: return "Burza"
-        return "Nieznana"
+        if code is None: return "N/A"
+        if code == 0: return "Clear Sky"
+        if code in [1, 2, 3]: return "Cloudy"
+        if code in [45, 48]: return "Fog"
+        if code in [51, 53, 55, 56, 57]: return "Drizzle"
+        if code in [61, 63, 65, 66, 67, 80, 81, 82]: return "Rain"
+        if code in [71, 73, 75, 77, 85, 86]: return "Snow"
+        if code in [95, 96, 99]: return "Storm"
+        return "Unknown"
 
     def get_image(self):
         img = Image.new("1", (128, 40), 0)
@@ -354,7 +354,7 @@ class WeatherModule:
                 w_aqi = bbox_aqi[2] - bbox_aqi[0]
                 draw.text((126 - w_aqi, 28), aqi_text, font=self.small_font, fill=1)
         else:
-            draw.text((2, 12), "Pobieranie...", font=self.font, fill=1)
+            draw.text((2, 12), "Loading...", font=self.font, fill=1)
 
         return img
 

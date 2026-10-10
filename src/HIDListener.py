@@ -615,7 +615,7 @@ class HIDListener(threading.Thread):
                             pct = data[3]
                             
                             if charging == 0x02:
-                                # Słuchawki wyłączone lub brak sygnału z dongla
+                                # Headset powered off or no signal from USB transceiver
                                 if self.battery_percent is not None:
                                     logger.info("SteelSeries headset disconnected/turned off.")
                                     self.battery_percent = None

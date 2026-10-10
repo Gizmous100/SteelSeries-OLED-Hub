@@ -55,15 +55,15 @@ Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.47`)
 
 ### 2. 🌦️ Live Weather & Multi-Region Air Quality Index (`AQI`)
 - **Zero-API-Key Weather Engine**: Powered by Open-Meteo Geocoding, Weather Forecast, and Air Quality APIs — simply type your city name in **Settings → Display → Weather Widget** and save.
-- **Configurable Global / Regional AQI Standards**: Choose your preferred Air Quality Index area/scale in Settings (**Obszar / Skala AQI**):
-  - **`Auto (Wg miasta / By City)`**: Automatically selects the matching regional AQI standard based on the geocoded country and timezone of your chosen city.
-  - **`Europa (EU - CAQI)`**: European Environment Agency Common Air Quality Index (`0–100+`).
-  - **`USA / Ameryki (US - EPA)`**: United States EPA Air Quality Index (`0–500`).
-  - **`Polska (PL - GIOŚ)`**: Polish Chief Inspectorate of Environmental Protection (GIOŚ) scale calculated from live `PM2.5`, `PM10`, `NO₂`, `O₃`, and `SO₂` concentrations (`0–100+`).
-  - **`Wielka Brytania (UK - DAQI)`**: UK DEFRA Daily Air Quality Index (`1–10`).
-  - **`Chiny (CN - MEP)`**: Chinese Ministry of Ecology and Environment (`HJ 633-2012`, `0–500`).
-  - **`Indie (IN - NAQI)`**: Indian CPCB National Air Quality Index (`0–500`).
-  - **`Kanada (CA - AQHI)`**: Canadian Air Quality Health Index (`1–10+`).
+- **Configurable Global / Regional AQI Standards**: Choose your preferred Air Quality Index area/scale in Settings (**AQI Region / Standard**):
+  - **`Auto (By City)`**: Automatically selects the matching regional AQI standard based on the geocoded country and timezone of your chosen city.
+  - **`Europe (EU - CAQI)`**: European Environment Agency Common Air Quality Index (`0–100+`).
+  - **`USA / Americas (US - EPA)`**: United States EPA Air Quality Index (`0–500`).
+  - **`Poland (PL - GIOS)`**: Polish Chief Inspectorate of Environmental Protection (GIOS) scale calculated from live `PM2.5`, `PM10`, `NO₂`, `O₃`, and `SO₂` concentrations (`0–100+`).
+  - **`United Kingdom (UK - DAQI)`**: UK DEFRA Daily Air Quality Index (`1–10`).
+  - **`China (CN - MEP)`**: Chinese Ministry of Ecology and Environment (`HJ 633-2012`, `0–500`).
+  - **`India (IN - NAQI)`**: Indian CPCB National Air Quality Index (`0–500`).
+  - **`Canada (CA - AQHI)`**: Canadian Air Quality Health Index (`1–10+`).
   - **`Australia (AU - NEPM)`**: Australian National Environment Protection Measure AQI (`0–100+%`).
 - **Clock Screen Weather Mini-Widget**: Displays a custom pixel-art weather condition icon (clear sky, clouds, drizzle/rain, snow, thunderstorm), live temperature (`°C`), and **`AQI`** on the left side of the clock screen.
 - **Full-Screen Weather Overlay (`F8`)**: Press the Weather hotkey (default **`F8`**) at any time—even inside fullscreen games—to summon a dedicated full-screen weather card showing your city name, weather description, temperature, and regional `AQI` (e.g., `EU AQI: 30`, `US AQI: 46`, `PL AQI: 28`) for a configurable duration (default: 5 seconds).
@@ -99,7 +99,7 @@ Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.47`)
 
 ## 📈 Version History (`v1.00` → `v1.47`)
 
-> 📄 **Pełny szczegółowy opis wszystkich zmian od początku projektu znajduje się w pliku [`CHANGELOG.md`](CHANGELOG.md).**
+> 📄 **For a complete, detailed description of all changes since the beginning of the project, see [`CHANGELOG.md`](CHANGELOG.md).**
 
 | Version | Category | Summary of Changes |
 | :--- | :---: | :--- |
@@ -114,7 +114,7 @@ Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.47`)
 | **`v1.44`** | ✨ Fix (`+0.01`) | **Memory, Threading & Single-Instance Hardening** (orphan process cleanup & PIL handle fixes). |
 | **`v1.45`** | ✨ Fix (`+0.01`) | **SMTC / Prime Video Playback Hysteresis** (2.5s grace period & `now-playing.exe` suspension). |
 | **`v1.46`** | ✨ Fix (`+0.01`) | **10-Zone Mouse RGB (`rgb-zoned-device`) & SteelSeries GG Config Switch Sync**. |
-| **`v1.47`** | ✨ Fix (`+0.01`) | **Multi-Region / Global AQI Standards** (`Auto`, `EU CAQI`, `US EPA`, `Polska GIOŚ`, `UK DAQI`, `China MEP`, `India NAQI`, `Canada AQHI`, `Australia NEPM`). |
+| **`v1.47`** | ✨ Fix (`+0.01`) | **Multi-Region / Global AQI Standards** (`Auto`, `EU CAQI`, `US EPA`, `Poland GIOS`, `UK DAQI`, `China MEP`, `India NAQI`, `Canada AQHI`, `Australia NEPM`). |
 
 ---
 

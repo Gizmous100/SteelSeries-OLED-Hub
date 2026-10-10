@@ -161,14 +161,14 @@ class SettingsGUI:
         "spotify_fetch_delay": {"1s (Fast)": "1", "2s (Default)": "2", "3s": "3", "5s": "5", "10s": "10"},
         "hw_polling_interval": {"500ms": "500", "1s (Default)": "1000", "2s": "2000", "5s": "5000"},
         "weather_aqi_region": {
-            "Auto (Wg miasta / By City)": "Auto",
-            "Europa (EU - CAQI)": "EU",
-            "USA / Ameryki (US - EPA)": "US",
-            "Polska (PL - GIOŚ)": "PL",
-            "Wielka Brytania (UK - DAQI)": "UK",
-            "Chiny (CN - MEP)": "CN",
-            "Indie (IN - NAQI)": "IN",
-            "Kanada (CA - AQHI)": "CA",
+            "Auto (By City)": "Auto",
+            "Europe (EU - CAQI)": "EU",
+            "USA / Americas (US - EPA)": "US",
+            "Poland (PL - GIOS)": "PL",
+            "United Kingdom (UK - DAQI)": "UK",
+            "China (CN - MEP)": "CN",
+            "India (IN - NAQI)": "IN",
+            "Canada (CA - AQHI)": "CA",
             "Australia (AU - NEPM)": "AU",
         },
     }
@@ -271,7 +271,7 @@ class SettingsGUI:
 
         tk.Label(
             sidebar,
-            text=f"v{__version__} • Autor: gizmous\nOryginał: 0z-zy / Firewee",
+            text=f"v{__version__} • Author: gizmous\nOriginal: 0z-zy / Firewee",
             font=("Segoe UI", 8),
             bg=Colors.SIDEBAR,
             fg=Colors.TEXT_DIM,
@@ -361,7 +361,7 @@ class SettingsGUI:
         self.vars["headset_hid_sync_enabled"] = tk.BooleanVar(value=bool(self.prefs.get_preference("headset_hid_sync_enabled")))
         self.vars["debug_enabled"] = tk.BooleanVar(value=bool(self.prefs.get_preference("debug_enabled")))
         self.vars["weather_enabled"] = tk.BooleanVar(value=bool(self.prefs.get_preference("weather_enabled")))
-        self.vars["weather_city"] = tk.StringVar(value=self.prefs.get_preference("weather_city") or "Warszawa")
+        self.vars["weather_city"] = tk.StringVar(value=self.prefs.get_preference("weather_city") or "Warsaw")
         self.vars["weather_aqi_region"] = tk.StringVar(
             value=self._display_for("weather_aqi_region", self.prefs.get_preference("weather_aqi_region") or "EU")
         )
@@ -377,7 +377,7 @@ class SettingsGUI:
         self._dropdown_row(p_gen, "Clock Design", self.vars["clock_style"], ["Standard", "Big Timer", "Date Focused", "Analog"])
         self._toggle_row(p_gen, "Use 24-Hour Format", self.vars["date_format"])
         self._toggle_row(p_gen, "Show Seconds", self.vars["display_seconds"])
-        self._toggle_row(p_gen, "Użyj języka polskiego", self.vars["use_polish_days"])
+        self._toggle_row(p_gen, "Use Polish Day Abbreviations", self.vars["use_polish_days"])
         tk.Frame(p_gen, bg=Colors.CONTENT, height=10).pack()
         self._toggle_row(p_gen, "Run on Start", self.vars["run_on_start"])
         tk.Frame(p_gen, bg=Colors.CONTENT, height=20).pack()
@@ -387,7 +387,7 @@ class SettingsGUI:
         self.update_btn.pack(anchor="w", padx=5)
         tk.Label(
             p_gen,
-            text=f"Wersja: v{__version__}  |  Autor: gizmous  |  Oryginalny projekt: 0z-zy (bazuje na Firewee)",
+            text=f"Version: v{__version__}  |  Author: gizmous  |  Original project: 0z-zy (based on Firewee)",
             font=FONT_SMALL,
             bg=Colors.CONTENT,
             fg=Colors.TEXT_DIM
@@ -420,7 +420,7 @@ class SettingsGUI:
         self._entry_row(p_disp, "City Name", self.vars["weather_city"], width=20)
         self._dropdown_row(
             p_disp,
-            "Obszar / Skala AQI (AQI Region)",
+            "AQI Region / Standard",
             self.vars["weather_aqi_region"],
             list(self.DROPDOWN_MAPS["weather_aqi_region"].keys()),
             width=24,

@@ -1,148 +1,147 @@
 # 📜 Changelog — SteelSeries OLED & RGB Hub
 
-Pełna historia zmian projektu **SteelSeries OLED & RGB Hub** rozwijanego przez **[gizmous](https://github.com/Gizmous100)** na bazie oryginalnego projektu **[OLED Customizer](https://github.com/0z-zy/OLED_Customizer)** autorstwa **[0z-zy](https://github.com/0z-zy)** (inspirowanego **[SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker)** autorstwa **[Firewee](https://github.com/Firewee)**).
+Complete version history for **SteelSeries OLED & RGB Hub**, developed and expanded by **[gizmous](https://github.com/Gizmous100)** on top of the original **[OLED Customizer](https://github.com/0z-zy/OLED_Customizer)** created by **[0z-zy](https://github.com/0z-zy)** (inspired by **[SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker)** by **[Firewee](https://github.com/Firewee)**).
 
-**Zasady wersjonowania projektu:**
-- **`+0.10` (`Major`)** — nowe główne moduły funkcjonalne (np. `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — poprawki błędów, optymalizacje architektury oraz rozbudowa istniejących modułów (np. `v1.41` – `v1.47`).
-
----
-
-## [`v1.47`] — 2026-10-10 — Rozbudowa modułu pogody o globalne / regionalne skale jakości powietrza (`AQI`)
-### ✨ Nowości i ulepszenia (`+0.01`)
-- **Wybór obszaru / standardu AQI w ustawieniach (`Settings → Display → 🌦️ Weather Widget`):**
-  - Dodano listę wyboru **Obszar / Skala AQI (AQI Region)** zapisywaną w preferencjach (`weather_aqi_region`).
-  - Dodano obsługę **9 trybów i regionalnych standardów jakości powietrza** w [`src/Weather.py`](src/Weather.py):
-    1. **`Auto (Wg miasta / By City)`** — automatyczny wybór skali AQI na podstawie kodu kraju (`country_code`) oraz strefy czasowej (`timezone`) wyszukanego miasta z API geokodowania Open-Meteo.
-    2. **`Europa (EU - CAQI)`** — Europejski Indeks Jakości Powietrza EEA (`0–100+`).
-    3. **`USA / Ameryki (US - EPA)`** — Amerykański standard US EPA AQI (`0–500`).
-    4. **`Polska (PL - GIOŚ)`** — Polski Indeks Jakości Powietrza Głównego Inspektoratu Ochrony Środowiska (`0–100+`) obliczany na żywo ze stężeń `PM2.5`, `PM10`, `NO₂`, `O₃` oraz `SO₂` według oficjalnych progów GIOŚ.
-    5. **`Wielka Brytania (UK - DAQI)`** — Brytyjski Daily Air Quality Index DEFRA (`skala 1–10`).
-    6. **`Chiny (CN - MEP)`** — Chiński standard Ministerstwa Ekologii i Środowiska `HJ 633-2012` (`0–500`).
-    7. **`Indie (IN - NAQI)`** — Indyjski National Air Quality Index CPCB (`0–500`).
-    8. **`Kanada (CA - AQHI)`** — Kanadyjski Air Quality Health Index (`skala 1–10+`) wyliczany eksponencjalnie z `O₃`, `NO₂` i `PM2.5`.
-    9. **`Australia (AU - NEPM)`** — Australijski standard NEPM AQI (`0–100+%` normy krajowej).
-- **Prezentacja wybranego regionu na pełnoekranowej karcie pogody (`F8`):**
-  - Pełnoekranowy ekran pogody wyświetla w prawym dolnym rogu skrót aktywnej skali wraz z wartością (np. `EU AQI: 30`, `US AQI: 46`, `PL AQI: 15`, `UK AQI: 2`).
-- **Natychmiastowe przeliczanie po zmianie w GUI:**
-  - Zmiana regionu AQI w ustawieniach przelicza indeks natychmiast z ostatnio pobranych danych zanieczyszczeń bez konieczności czekania na kolejny cykl odświeżania.
+**Project Versioning Policy:**
+- **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.47`).
 
 ---
 
-## [`v1.46`] — 2026-10-10 — Pełne wsparcie 10-strefowego RGB myszek (`rgb-zoned-device`) i synchronizacja profili GG
-### ✨ Poprawki i ulepszenia (`+0.01`)
-- **Obsługa wielostrefowych myszek SteelSeries (`rgb-zoned-device`):**
-  - Rozszerzono rejestrację zdarzenia `LIGHTING` w [`src/SteelSeriesAPI.py`](src/SteelSeriesAPI.py) o urządzenie `rgb-zoned-device` oraz wszystkie 10 niezależnych stref (`one`, `two`, `three`, `four`, `five`, `six`, `seven`, `eight`, `nine`, `ten`) oprócz tradycyjnych stref `wheel` i `logo`.
-  - Rozwiązano problem, w którym myszki wielostrefowe (np. **SteelSeries Rival 5**) pozostawały na fabrycznym pomarańczowym kolorze SteelSeries mimo włączenia synchronizacji RGB lub wejścia w tryb AFK.
-- **Automatyczne wykrywanie przełączenia profilu (Config) w SteelSeries GG:**
-  - Dodano w [`src/DisplayManager.py`](src/DisplayManager.py) monitorowanie zmian w bazie danych `C:\ProgramData\SteelSeries\GG\apps\engine\db\database.db` (`-wal`). Po zmianie konfiguracji w SteelSeries GG aplikacja automatycznie ponawia synchronizację koloru RGB.
-- **Architektura oświetlenia oparta wyłącznie na przejściach stanów:**
-  - Wyeliminowano wysyłanie zdarzeń RGB w pętli 10 FPS (zapobieganie błędom `HTTP 429 Too Many Requests` i zawieszaniu profilu myszki).
+## [`v1.47`] — 2026-10-10 — Multi-Region / Global Air Quality Index (`AQI`) Standards
+### ✨ New Features & Improvements (`+0.01`)
+- **Selectable AQI Region / Standard in Settings (`Settings → Display → 🌦️ Weather Widget`):**
+  - Added the **AQI Region / Standard** dropdown saved in user preferences (`weather_aqi_region`).
+  - Added support for **9 regional and global Air Quality Index standards** in [`src/Weather.py`](src/Weather.py):
+    1. **`Auto (By City)`** — automatically selects the appropriate AQI scale based on the geocoded `country_code` and `timezone` of the selected city from the Open-Meteo Geocoding API.
+    2. **`Europe (EU - CAQI)`** — European Environment Agency Common Air Quality Index (`0–100+`).
+    3. **`USA / Americas (US - EPA)`** — United States EPA Air Quality Index (`0–500`).
+    4. **`Poland (PL - GIOS)`** — Polish Chief Inspectorate of Environmental Protection (GIOS) index (`0–100+`) computed live from `PM2.5`, `PM10`, `NO₂`, `O₃`, and `SO₂` pollutant concentrations.
+    5. **`United Kingdom (UK - DAQI)`** — UK DEFRA Daily Air Quality Index (`1–10` scale).
+    6. **`China (CN - MEP)`** — Chinese Ministry of Ecology and Environment `HJ 633-2012` standard (`0–500`).
+    7. **`India (IN - NAQI)`** — Indian CPCB National Air Quality Index (`0–500`).
+    8. **`Canada (CA - AQHI)`** — Canadian Air Quality Health Index (`1–10+` scale) calculated exponentially from `O₃`, `NO₂`, and `PM2.5`.
+    9. **`Australia (AU - NEPM)`** — Australian NEPM Air Quality Index (`0–100+%` of national standard).
+- **Regional AQI Label on Full-Screen Weather Card (`F8`):**
+  - The full-screen weather overlay displays the active regional standard prefix alongside the index value in the bottom-right corner (e.g., `EU AQI: 30`, `US AQI: 46`, `PL AQI: 15`, `UK AQI: 2`).
+- **Instant Recalculation on Settings Save:**
+  - Switching the AQI region in Settings recalculates the index immediately from cached pollutant data without waiting for the next 30-minute API polling cycle.
 
 ---
 
-## [`v1.45`] — 2026-10-10 — Histereza odtwarzania wideo (Prime Video / Netflix / YouTube) i blokada konfliktów GG
-### ✨ Poprawki i ulepszenia (`+0.01`)
-- **Histereza pauzy / buforowania SMTC (2.5 sekundy):**
-  - Dodano okno podtrzymania stanu odtwarzania (`pause_grace_ms`) w [`src/DisplayManager.py`](src/DisplayManager.py), które pochłania chwilowe zmiany statusu `Paused`/`Stopped` zgłaszane przez aplikacje wideo (Amazon Prime Video, Netflix, przeglądarki) podczas buforowania lub przewijania. Wyeliminowano migotanie ekranu OLED między odtwarzaczem a zegarem.
-- **Rozpoznawanie źródeł wideo w SMTC:**
-  - Dodano rozpoznawanie aplikacji wideo (`primevideo`, `amazonvideo`, `netflix`, `disney`, `vlc`, `mpv`, `mpc`, `potplayer`, `kodi`) w [`src/DisplayManager.py`](src/DisplayManager.py) oraz [`src/WindowsMedia.py`](src/WindowsMedia.py).
-- **Automatyczne wstrzymywanie `now-playing.exe`:**
-  - Dodano w [`src/SteelSeriesAPI.py`](src/SteelSeriesAPI.py) automatyczne wstrzymywanie wbudowanego apletu `now-playing.exe` ze SteelSeries GG na czas działania programu (oraz wznawianie go przy zamknięciu), aby zapobiec walce dwóch procesów o wyświetlacz OLED.
+## [`v1.46`] — 2026-10-10 — Full 10-Zone Mouse RGB (`rgb-zoned-device`) & SteelSeries GG Profile Sync
+### ✨ Improvements & Fixes (`+0.01`)
+- **Multi-Zone SteelSeries Mouse Support (`rgb-zoned-device`):**
+  - Extended the `LIGHTING` event registration in [`src/SteelSeriesAPI.py`](src/SteelSeriesAPI.py) to include `rgb-zoned-device` and all 10 independent zones (`one`, `two`, `three`, `four`, `five`, `six`, `seven`, `eight`, `nine`, `ten`) alongside standard `wheel` and `logo` zones.
+  - Fixed the issue where multi-zone mice (such as the **SteelSeries Rival 5**) remained stuck on factory SteelSeries Orange despite enabling RGB sync or entering AFK mode.
+- **Automatic SteelSeries GG Profile (Config) Switch Detection:**
+  - Added background monitoring of `C:\ProgramData\SteelSeries\GG\apps\engine\db\database.db` (`-wal`) in [`src/DisplayManager.py`](src/DisplayManager.py). Whenever a hardware profile/config is switched in SteelSeries GG, the application automatically re-applies the active RGB color.
+- **Transition-Only Lighting Dispatch Architecture:**
+  - Eliminated sending RGB lighting events inside the 10 FPS render loop, preventing `HTTP 429 Too Many Requests` errors and mouse profile lockups.
 
 ---
 
-## [`v1.44`] — 2026-10-09 — Optymalizacja pamięci, wątków i blokady pojedynczej instancji
-### ✨ Poprawki i ulepszenia (`+0.01`)
-- **Zamykanie osieroconych procesów przy starcie (`_kill_orphan_instances`):**
-  - W [`main.py`](main.py) dodano automatyczne wykrywanie i zamykanie zawieszonych procesów z poprzednich sesji przed utworzeniem pliku blokady `.lock`.
-- **Eliminacja wycieków pamięci i uchwytów PIL/GDI:**
-  - Zoptymalizowano pętlę renderowania 10 FPS oraz buforowanie klatek (`_last_sent_frame`), ograniczając zbędne alokacje obiektów graficznych.
-- **Usunięcie powtarzających się klatek w trybie AFK:**
-  - W trybie AFK pusta klatka (`[0] * 640`) jest wysyłana wyłącznie raz przy przejściu w stan bezczynności zamiast co sekundę, co zapobiega wybudzaniu i mruganiu ekranu OLED.
+## [`v1.45`] — 2026-10-10 — Streaming & Video Playback Hysteresis (Prime Video / Netflix / YouTube) & GG Conflict Guard
+### ✨ Improvements & Fixes (`+0.01`)
+- **SMTC Pause / Buffering Hysteresis (2.5-Second Grace Window):**
+  - Added a playback hold window (`pause_grace_ms`) in [`src/DisplayManager.py`](src/DisplayManager.py) that absorbs transient `Paused`/`Stopped` status blips reported by UWP and browser video players (Amazon Prime Video, Netflix, YouTube) during buffering or seeking. Eliminates OLED flickering between the media player and the clock.
+- **Expanded Video Source Recognition in SMTC:**
+  - Added video app identification (`primevideo`, `amazonvideo`, `netflix`, `disney`, `vlc`, `mpv`, `mpc`, `potplayer`, `kodi`) in [`src/DisplayManager.py`](src/DisplayManager.py) and [`src/WindowsMedia.py`](src/WindowsMedia.py).
+- **Automatic Suspension of `now-playing.exe`:**
+  - Added automatic suspension of SteelSeries GG's built-in `now-playing.exe` applet in [`src/SteelSeriesAPI.py`](src/SteelSeriesAPI.py) while the application is running (and automatic resumption on exit) to prevent competing OLED frame updates.
 
 ---
 
-## [`v1.43`] — 2026-10-09 — Stała szerokość cyfr (`Anti-Jitter`) i adaptacyjne układy zegara
-### ✨ Poprawki i ulepszenia (`+0.01`)
-- **Renderowanie cyfr o stałej szerokości (`_draw_fixed_width_text`):**
-  - W [`src/Timer.py`](src/Timer.py) zaimplementowano renderowanie każdej cyfry zegara w komórce o stałej szerokości równej cyfrze `"0"`. Zegar nie przesuwa się już na boki, gdy w sekundniku pojawiają się węższe cyfry (`1`, `4`).
-- **Dynamiczne dopasowanie wszystkich 4 stylów zegara do aktywnych widżetów bocznych:**
-  - Wszystkie 4 motywy (*Standard*, *Big Timer*, *Date Focused*, *Analog*) dynamicznie wyliczają dostępną przestrzeń poziomą `[x_left .. x_right]` w zależności od tego, czy aktywny jest widżet pogody po lewej (`32px`) oraz widżet baterii słuchawek po prawej (`19px`), automatycznie dobierając rozmiar czcionki i środek ciężkości.
+## [`v1.44`] — 2026-10-09 — Memory, Threading & Single-Instance Lock Hardening
+### ✨ Improvements & Fixes (`+0.01`)
+- **Orphaned Process Cleanup on Startup:**
+  - Added automatic detection and termination of hung processes from previous sessions in [`main.py`](main.py) before acquiring the `.lock` file.
+- **Elimination of PIL/GDI Handle & Memory Leaks:**
+  - Optimized the 10 FPS render loop and frame caching (`_last_sent_frame`), eliminating redundant image object allocations.
+- **Deduplicated Blank Frames in AFK Mode:**
+  - In AFK mode, the blank frame (`[0] * 640`) is sent only once upon entering idle state rather than every second, preventing unnecessary OLED wakeups and flickering.
 
 ---
 
-## [`v1.42`] — 2026-10-09 — Odporność na brak bibliotek SQLite (`sqlite3.dll`) i poprawka okna Ustawień
-### ✨ Poprawki i ulepszenia (`+0.01`)
-- **Wbudowana biblioteka `sqlite3.dll` i bezpieczny import (`Fault Tolerance`):**
-  - Dodano plik `sqlite3.dll` do projektu i specyfikacji PyInstaller oraz zabezpieczono [`src/ProfileBackup.py`](src/ProfileBackup.py) blokami `try...except`, dzięki czemu brak systemowych bibliotek DLL nie blokuje uruchomienia programu, a kopie zapasowe i kompaktowanie baz (`VACUUM`) działają na każdym systemie Windows.
-- **Poprawka ponownego otwierania okna Ustawień (`SettingsWindow.py`):**
-  - Naprawiono zwalnianie blokady `_open_gui` i niszczenie okna `Tk()` po kliknięciu `SAVE`, co umożliwiało wielokrotne otwieranie okna ustawień z zasobnika systemowego bez błędu wątku Tkintera.
+## [`v1.43`] — 2026-10-09 — Fixed-Width Anti-Jitter Digits & Adaptive Clock Layouts
+### ✨ Improvements & Fixes (`+0.01`)
+- **Fixed-Width Digit Rendering (`_draw_fixed_width_text`):**
+  - Implemented per-digit fixed-width cell rendering (matched to the width of `"0"`) in [`src/Timer.py`](src/Timer.py). Prevents horizontal clock jitter when narrow digits (`1`, `4`) appear in the seconds counter.
+- **Dynamic Horizontal Layout Adaptation Across All 4 Clock Styles:**
+  - All 4 clock themes (*Standard*, *Big Timer*, *Date Focused*, and *Analog*) dynamically calculate available horizontal space `[x_left .. x_right]` based on whether the left weather widget (`32px`) and/or right headset battery widget (`19px`) are active, automatically scaling font sizes and centering.
 
 ---
 
-## [`v1.41`] — 2026-10-09 — Kompaktowe polskie nazwy dni tygodnia i skrócony format daty
-### ✨ Poprawki i ulepszenia (`+0.01`)
-- **Polskie skróty dni tygodnia (`use_polish_days`):**
-  - Zastąpiono dawną opcję językową opcją **„Użyj języka polskiego”** w [`src/Timer.py`](src/Timer.py), [`src/SettingsWindow.py`](src/SettingsWindow.py) i [`src/UserPreferences.py`](src/UserPreferences.py).
-  - Wprowadzono ultrakompaktowe polskie oznaczenia dni tygodnia (`P`, `W`, `Sr`, `C`, `Pt`, `S`, `N`) oraz skrócony format roku (`dd/mm/yy`), dzięki czemu data mieści się czytelnie na ekranie 128×40 nawet przy jednocześnie włączonej pogodzie i baterii słuchawek.
+## [`v1.42`] — 2026-10-09 — Bundled `sqlite3.dll` Fault Tolerance & Settings Window Re-Entry Fix
+### ✨ Improvements & Fixes (`+0.01`)
+- **Bundled `sqlite3.dll` & Fault-Tolerant Imports:**
+  - Added `sqlite3.dll` to the repository and PyInstaller spec and wrapped native SQLite imports in [`src/ProfileBackup.py`](src/ProfileBackup.py) with `try...except` blocks so missing host DLLs never block startup and SteelSeries GG database backups/compaction (`VACUUM`) work on every Windows system.
+- **Settings Window Re-Opening Fix (`SettingsWindow.py`):**
+  - Fixed releasing the `_open_gui` lock and destroying the `Tk()` root after clicking `SAVE`, allowing the Settings window to be opened repeatedly from the System Tray without Tkinter threading errors.
 
 ---
 
-## [`v1.40`] — 2026-10-09 — 🆕 Inteligentny tryb bezczynności (Smart Idle / AFK Mode) z obsługą padów XInput
-### 🆕 Nowy główny moduł (`+0.10`)
-- **Automatyczne wygaszanie ekranu OLED i podświetlenia RGB (`afk_enabled`, `afk_timeout_minutes`):**
-  - Po określonym czasie bezczynności użytkownika (domyślnie 5 minut) aplikacja wygasza wyświetlacz OLED (ochrona przed wypaleniem matrycy) oraz wyłącza podświetlenie RGB klawiatury i myszki.
-- **Wykrywanie aktywności kontrolerów / padów XInput (`src/afk_monitor.py`):**
-  - Dodano moduł [`src/afk_monitor.py`](src/afk_monitor.py), który w tle odpytuje do 4 podłączonych kontrolerów XInput (`XInputGetState` z `xinput1_4.dll` / `xinput1_3.dll` / `xinput9_1_0.dll`).
-  - Poruszanie drążkami analogowymi, wciskanie spustów (LT/RT) lub przycisków na padzie podczas gry automatycznie resetuje licznik bezczynności Windows (`SendInput` z `VK_F15`), zapobiegając wygaszeniu ekranu OLED i podświetlenia w trakcie grania na kontrolerze.
-- **Filtrowanie pozornych wejść (Phantom Input Guard):**
-  - Zabezpieczono pętlę AFK przed fałszywymi impulsami wejścia generowanymi przez sterownik SteelSeries w ciągu 3 sekund od przełączenia stanu podświetlenia.
+## [`v1.41`] — 2026-10-09 — Compact Polish Day Abbreviations & Short Date Format
+### ✨ Improvements & Fixes (`+0.01`)
+- **Compact Polish Day Abbreviations (`use_polish_days`):**
+  - Replaced the legacy language toggle with **Use Polish Day Abbreviations** in [`src/Timer.py`](src/Timer.py), [`src/SettingsWindow.py`](src/SettingsWindow.py), and [`src/UserPreferences.py`](src/UserPreferences.py).
+  - Introduced ultra-compact Polish day abbreviations (`P`, `W`, `Sr`, `C`, `Pt`, `S`, `N`) and a 2-digit year format (`dd/mm/yy`) so the date fits cleanly on the 128×40 OLED display even when both the weather and battery widgets are active.
 
 ---
 
-## [`v1.30`] — 2026-10-08 — 🆕 Moduł Pogody na żywo i Indeksu Jakości Powietrza (`src/Weather.py`)
-### 🆕 Nowy główny moduł (`+0.10`)
-- **Integracja z Open-Meteo bez kluczy API (`src/Weather.py`):**
-  - Dodano moduł [`src/Weather.py`](src/Weather.py) pobierający współrzędne geograficzne wybranego miasta (Open-Meteo Geocoding API), aktualną temperaturę i kod pogody WMO (Open-Meteo Forecast API) oraz jakość powietrza (`AQI`, Open-Meteo Air Quality API).
-- **Mini-widżet pogody na ekranie zegara (`src/Timer.py`):**
-  - Po lewej stronie ekranu zegara (`x = 0..31`) wyświetlana jest pikseloartowa ikona warunków pogodowych (słońce, chmury, deszcz, śnieg, burza), wskaźnik `AQI` oraz aktualna temperatura w `°C`.
-- **Pełnoekranowa karta pogody pod skrótem klawiszowym (`F8`):**
-  - Dodano globalny skrót klawiszowy (domyślnie `F8`, konfigurowalny w zakładce *Hotkeys*), który w dowolnym momencie (również w grach pełnoekranowych) wyświetla przez zadany czas (domyślnie 5 s) pełnoekranową kartę pogody z nazwą miasta, opisem zjawiska po polsku, ikoną, temperaturą i `AQI`.
+## [`v1.40`] — 2026-10-09 — 🆕 Smart Idle / AFK Mode with XInput Gamepad Detection
+### 🆕 New Major Module (`+0.10`)
+- **Automatic OLED & RGB Blackout on Idle (`afk_enabled`, `afk_timeout_minutes`):**
+  - After a configurable user inactivity timeout (default: 5 minutes), the application blanks the OLED screen (burn-in protection) and turns off keyboard and mouse RGB lighting.
+- **XInput Controller / Gamepad Activity Detection (`src/afk_monitor.py`):**
+  - Added [`src/afk_monitor.py`](src/afk_monitor.py) to poll up to 4 connected XInput controllers (`XInputGetState` via `xinput1_4.dll` / `xinput1_3.dll`).
+  - Moving analog sticks, pressing triggers (LT/RT), or pressing buttons on a gamepad automatically resets the Windows idle timer (`VK_F15`), preventing the OLED screen and RGB lighting from turning off while gaming with a controller.
+- **Phantom Input Guard:**
+  - Protected the AFK state machine against false input impulses generated by SteelSeries drivers within 3 seconds of switching lighting states.
 
 ---
 
-## [`v1.20`] — 2026-10-07 — 🆕 Poziom baterii bezprzewodowych słuchawek przez natywny USB HID (`src/HIDListener.py`)
-### 🆕 Nowy główny moduł (`+0.10`)
-- **Bezpośredni odczyt baterii słuchawek przez USB HID:**
-  - Rozbudowano [`src/HIDListener.py`](src/HIDListener.py) o aktywne odpytywanie odbiornika USB SteelSeries raportem HID (`[0x06, 0xb0]`) w celu odczytu poziomu naładowania baterii słuchawek bezprzewodowych (m.in. **SteelSeries Arctis Nova 7** oraz kompatybilnych modeli HyperX / Cloud III).
-- **Pionowa 4-segmentowa ikona baterii na ekranie zegara (`src/Timer.py`):**
-  - W prawym górnym rogu ekranu zegara (`x = 110..127`) rysowana jest czytelna pionowa ikona baterii z 4 segmentami oraz opcjonalnym wynikiem procentowym (`0%`–`100%`) wyśrodkowanym pod ikoną.
-- **Wykrywanie wyłączenia słuchawek / utraty zasięgu:**
-  - Aplikacja rozpoznaje stan wyłączenia słuchawek na podstawie bajtów statusu raportu HID i natychmiast ukrywa widżet baterii, aby nie wyświetlać nieaktualnego poziomu naładowania.
+## [`v1.30`] — 2026-10-08 — 🆕 Live Weather & Air Quality Index Module (`src/Weather.py`)
+### 🆕 New Major Module (`+0.10`)
+- **Zero-API-Key Open-Meteo Integration (`src/Weather.py`):**
+  - Added [`src/Weather.py`](src/Weather.py) to fetch city coordinates (Open-Meteo Geocoding API), live temperature and WMO weather condition codes (Open-Meteo Forecast API), and Air Quality Index data (`AQI`, Open-Meteo Air Quality API).
+- **Clock Screen Weather Mini-Widget (`src/Timer.py`):**
+  - Displays a pixel-art weather condition icon (sun, clouds, rain, snow, storm), `AQI` indicator, and current temperature in `°C` on the left side of the clock display (`x = 0..31`).
+- **Full-Screen Weather Overlay via Global Hotkey (`F8`):**
+  - Added a configurable global hotkey (default: `F8` in the *Hotkeys* tab) that displays a full-screen weather card showing the city name, weather condition description, icon, temperature, and `AQI` for a configurable duration (default: 5 seconds).
 
 ---
 
-## [`v1.10`] — 2026-10-07 — 🆕 Automatyczne przełączanie na Monitor Sprzętu w grach 3D
-### 🆕 Nowy główny moduł (`+0.10`)
-- **Automatyczny tryb „System Stats in Games” (`auto_hw_monitor_game`):**
-  - Dodano w [`src/HardwareMonitor.py`](src/HardwareMonitor.py), [`src/DisplayManager.py`](src/DisplayManager.py) oraz [`src/SettingsWindow.py`](src/SettingsWindow.py) funkcję automatycznego przełączania wyświetlacza OLED z zegara na ekran monitora zasobów (**CPU / GPU / RAM / FPS**), gdy tylko PresentMon wykryje aktywny proces gry 3D renderujący klatki.
-  - Po zamknięciu gry wyświetlacz automatycznie powraca do zegara lub odtwarzacza multimediów.
+## [`v1.20`] — 2026-10-07 — 🆕 Wireless Headset Battery via Native USB HID (`src/HIDListener.py`)
+### 🆕 New Major Module (`+0.10`)
+- **Direct USB HID Headset Battery Readout:**
+  - Extended [`src/HIDListener.py`](src/HIDListener.py) to actively poll the SteelSeries USB wireless transceiver via HID reports (`[0x06, 0xb0]`) to read real-time battery percentage on wireless headsets (including **SteelSeries Arctis Nova 7** and compatible HyperX / Cloud III models).
+- **Vertical 4-Segment Battery Icon on Clock (`src/Timer.py`):**
+  - Renders a vertical 4-bar battery indicator in the top-right corner of the clock display (`x = 110..127`) with an optional numeric percentage (`0%`–`100%`) centered below the icon.
+- **Headset Power-Off / Out-of-Range Detection:**
+  - Detects when the wireless headset is turned off or disconnected via HID status bytes and immediately hides the battery indicator so stale battery levels are never shown.
 
 ---
 
-## [`v1.00`] — Fundament projektu — Oryginalny OLED Customizer (`0z-zy` / `Firewee`)
-### 📦 Funkcje bazowe zachowane z oryginalnej aplikacji
-- **Dynamiczny panel multimediów (Spotify Web API + Windows SMTC):**
-  - Wyświetlanie tytułu utworu, wykonawcy, paska postępu, czasu trwania oraz ikon źródła (Spotify, YouTube, Media) w 5 stylach (*Standard*, *Compact*, *Centered*, *Ticker*, *Minimal*).
+## [`v1.10`] — 2026-10-07 — 🆕 Automatic Hardware Monitor Switching in 3D Games
+### 🆕 New Major Module (`+0.10`)
+- **Automatic "System Stats in Games" Mode (`auto_hw_monitor_game`):**
+  - Added automatic switching from the clock to the **CPU / GPU / RAM / FPS** Hardware Monitor in [`src/HardwareMonitor.py`](src/HardwareMonitor.py), [`src/DisplayManager.py`](src/DisplayManager.py), and [`src/SettingsWindow.py`](src/SettingsWindow.py) whenever PresentMon detects an active 3D game rendering frames.
+  - Automatically returns to the clock or media player once the game closes.
+
+---
+
+## [`v1.00`] — Project Foundation — Original OLED Customizer (`0z-zy` / `Firewee`)
+### 📦 Core Features Preserved from the Original Application
+- **Dynamic Media Dashboard (Spotify Web API + Windows SMTC):**
+  - Displays track title, artist, progress bar, duration, and source icons (Spotify, YouTube, generic Media) across 5 player styles (*Standard*, *Compact*, *Centered*, *Ticker*, *Minimal*).
 - **Ghost-Monitor (`src/HardwareMonitor.py`, `src/fps_monitor.py`):**
-  - Podgląd obciążenia i temperatury CPU/GPU (LibreHardwareMonitor + fallback WMI), użycia pamięci RAM oraz licznika FPS na żywo (PresentMon) po naciśnięciu klawisza `Insert` lub w trybie stałym.
-- **Sterowanie głośnością i integracja z Discordem (`src/volume.py`, `src/DiscordRPC.py`):**
-  - Wizualny pasek głośności na ekranie OLED, synchronizacja statusu mikrofonu z Discordem przez lokalne IPC oraz globalny skrót wyciszania mikrofonu (obsługa klawiatury, przycisków bocznych myszy `Mouse 4` / `Mouse 5` oraz fizycznego przycisku mute na słuchawkach).
-- **Wbudowany kalkulator OLED (`src/Calculator.py`):**
-  - Interaktywny kalkulator uruchamiany skrótem `Ctrl + Insert` z przechwytywaniem klawiatury numerycznej (Numpad) w niskopoziomowym hooku `WH_KEYBOARD_LL`.
-- **4 style zegara (`src/Timer.py`):**
-  - Motywy *Standard*, *Big Timer*, *Date Focused* oraz *Analog* z wyborem formatu 12h/24h i sekundnika.
-- **Kopie zapasowe profili SteelSeries GG (`src/ProfileBackup.py`):**
-  - Tworzenie i przywracanie kopii zapasowych baz danych `engine`, `prism` oraz `sonar` wraz z funkcją kompaktowania (`VACUUM`).
-
+  - Live CPU/GPU load and temperature monitoring (LibreHardwareMonitor + WMI fallback), RAM usage, and live game FPS counter (PresentMon) via the `Insert` hotkey or persistent mode.
+- **Volume Control & Discord Integration (`src/volume.py`, `src/DiscordRPC.py`):**
+  - Visual volume bar overlay on the OLED screen, Discord microphone mute synchronization over local IPC, and global microphone mute hotkeys (keyboard keys, `Mouse 4` / `Mouse 5` side buttons, and physical headset mute button).
+- **Built-In OLED Calculator (`src/Calculator.py`):**
+  - Interactive calculator launched with `Ctrl + Insert`, capturing Numpad keys via a low-level `WH_KEYBOARD_LL` hook so keystrokes don't leak into active games.
+- **4 Clock Styles (`src/Timer.py`):**
+  - *Standard*, *Big Timer*, *Date Focused*, and *Analog* clock themes with 12h/24h format and seconds toggle.
+- **SteelSeries GG Profile Backups (`src/ProfileBackup.py`):**
+  - One-click backup, restore, and `VACUUM` compaction for SteelSeries `engine`, `prism`, and `sonar` SQLite databases.

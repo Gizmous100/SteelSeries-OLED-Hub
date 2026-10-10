@@ -160,6 +160,17 @@ class SettingsGUI:
     DROPDOWN_MAPS = {
         "spotify_fetch_delay": {"1s (Fast)": "1", "2s (Default)": "2", "3s": "3", "5s": "5", "10s": "10"},
         "hw_polling_interval": {"500ms": "500", "1s (Default)": "1000", "2s": "2000", "5s": "5000"},
+        "weather_aqi_region": {
+            "Auto (Wg miasta / By City)": "Auto",
+            "Europa (EU - CAQI)": "EU",
+            "USA / Ameryki (US - EPA)": "US",
+            "Polska (PL - GIOŚ)": "PL",
+            "Wielka Brytania (UK - DAQI)": "UK",
+            "Chiny (CN - MEP)": "CN",
+            "Indie (IN - NAQI)": "IN",
+            "Kanada (CA - AQHI)": "CA",
+            "Australia (AU - NEPM)": "AU",
+        },
     }
 
     # tkinter keysym -> the "Key.x" strings DisplayManager._key_str_to_vk expects
@@ -351,6 +362,9 @@ class SettingsGUI:
         self.vars["debug_enabled"] = tk.BooleanVar(value=bool(self.prefs.get_preference("debug_enabled")))
         self.vars["weather_enabled"] = tk.BooleanVar(value=bool(self.prefs.get_preference("weather_enabled")))
         self.vars["weather_city"] = tk.StringVar(value=self.prefs.get_preference("weather_city") or "Warszawa")
+        self.vars["weather_aqi_region"] = tk.StringVar(
+            value=self._display_for("weather_aqi_region", self.prefs.get_preference("weather_aqi_region") or "EU")
+        )
         self.vars["weather_display_time"] = tk.StringVar(value=str(self.prefs.get_preference("weather_display_time") or "5"))
         afk_pref = self.prefs.get_preference("afk_enabled")
         self.vars["afk_enabled"] = tk.BooleanVar(value=afk_pref if afk_pref is not None else True)
@@ -404,6 +418,13 @@ class SettingsGUI:
         self._header(p_disp, "🌦️ Weather Widget")
         self._toggle_row(p_disp, "Enable Weather (Mini-icon on Clock)", self.vars["weather_enabled"])
         self._entry_row(p_disp, "City Name", self.vars["weather_city"], width=20)
+        self._dropdown_row(
+            p_disp,
+            "Obszar / Skala AQI (AQI Region)",
+            self.vars["weather_aqi_region"],
+            list(self.DROPDOWN_MAPS["weather_aqi_region"].keys()),
+            width=24,
+        )
         self._entry_row(p_disp, "Hotkey Display Time (s)", self.vars["weather_display_time"], width=10)
         
         tk.Frame(p_disp, bg=Colors.CONTENT, height=10).pack()
@@ -542,9 +563,9 @@ class SettingsGUI:
     def _toggle_row(self, p, l, v, command=None):
         f = self._row_frame(p); tk.Label(f, text=l, font=FONT_BODY, fg=Colors.TEXT_MAIN, bg=Colors.CARD_BG).pack(side="left", padx=15)
         ToggleSwitch(f, v, command=command).pack(side="right", padx=15)
-    def _dropdown_row(self, p, l, v, opts):
+    def _dropdown_row(self, p, l, v, opts, width=15):
         f = self._row_frame(p); tk.Label(f, text=l, font=FONT_BODY, fg=Colors.TEXT_MAIN, bg=Colors.CARD_BG).pack(side="left", padx=15)
-        cb = ttk.Combobox(f, textvariable=v, values=opts, state="readonly", width=15); cb.pack(side="right", padx=15)
+        cb = ttk.Combobox(f, textvariable=v, values=opts, state="readonly", width=width); cb.pack(side="right", padx=15)
     def _entry_row(self, p, l, v, width=10, show=None):
         f = self._row_frame(p); tk.Label(f, text=l, font=FONT_BODY, fg=Colors.TEXT_MAIN, bg=Colors.CARD_BG).pack(side="left", padx=15)
         tk.Entry(f, textvariable=v, bg=Colors.INPUT_BG, fg=Colors.INPUT_FG, relief="flat", width=width, show=show).pack(side="right", padx=15)

@@ -2,18 +2,18 @@
 
 **The ultimate music, hardware, weather, headset battery, and RGB ambiance dashboard for your SteelSeries Keyboard & Peripherals.**
 
-![Version](https://img.shields.io/badge/version-1.46-blue?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-1.47-blue?style=for-the-badge)
 ![Author](https://img.shields.io/badge/author-gizmous-orange?style=for-the-badge)
 ![Inspired By](https://img.shields.io/badge/inspired_by-OLED_Customizer_(0z--zy)-lightgrey?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=for-the-badge)
 
-**SteelSeries OLED & RGB Hub** transforms your keyboard's 128×40 OLED screen and SteelSeries RGB peripherals into a unified, high-contrast information and lighting hub. Whether you're listening to Spotify or YouTube, watching Prime Video, tracking CPU/GPU temperatures and live FPS in-game, checking your wireless headset battery, or viewing local weather and European Air Quality (`AQI`), SteelSeries OLED & RGB Hub delivers it with pixel-perfect clarity and zero flicker.
+**SteelSeries OLED & RGB Hub** transforms your keyboard's 128×40 OLED screen and SteelSeries RGB peripherals into a unified, high-contrast information and lighting hub. Whether you're listening to Spotify or YouTube, watching Prime Video, tracking CPU/GPU temperatures and live FPS in-game, checking your wireless headset battery, or viewing local weather and multi-region Air Quality (`AQI`), SteelSeries OLED & RGB Hub delivers it with pixel-perfect clarity and zero flicker.
 
 > [!NOTE]
 > ### 💡 Inspiration & Project Heritage
-> **SteelSeries OLED & RGB Hub (`v1.46`)** is **heavily inspired by the original [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) created by [0z-zy](https://github.com/0z-zy)** (and the foundational [SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker) by **[Firewee](https://github.com/Firewee)**).  
-> It **retains and includes all features of the original application** (Spotify & Windows SMTC media dashboard, CPU/GPU/RAM/FPS Ghost-Monitor, adaptive volume control, Discord RPC & global mic mute, OLED calculator, 4 clock themes, and SteelSeries profile backups), while being significantly expanded by **[gizmous](https://github.com/gizmous)** with brand-new wireless headset battery telemetry, live weather & European AQI, smart AFK power-saving with gamepad detection, 10-zone mouse RGB & profile sync, and anti-jitter adaptive rendering.
+> **SteelSeries OLED & RGB Hub (`v1.47`)** is **heavily inspired by the original [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) created by [0z-zy](https://github.com/0z-zy)** (and the foundational [SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker) by **[Firewee](https://github.com/Firewee)**).  
+> It **retains and includes all features of the original application** (Spotify & Windows SMTC media dashboard, CPU/GPU/RAM/FPS Ghost-Monitor, adaptive volume control, Discord RPC & global mic mute, OLED calculator, 4 clock themes, and SteelSeries profile backups), while being significantly expanded by **[gizmous](https://github.com/gizmous)** with brand-new wireless headset battery telemetry, live weather & multi-region global AQI, smart AFK power-saving with gamepad detection, 10-zone mouse RGB & profile sync, and anti-jitter adaptive rendering.
 
 ---
 
@@ -21,14 +21,14 @@
 
 - [🆕 Major New Features & Expansions (by gizmous)](#-major-new-features--expansions-by-gizmous)
   - [1. 🎧 Wireless Headset Battery & Native USB HID Telemetry](#1--wireless-headset-battery--native-usb-hid-telemetry)
-  - [2. 🌦️ Live Weather & European Air Quality Index (AQI)](#2-️-live-weather--european-air-quality-index-aqi)
+  - [2. 🌦️ Live Weather & Multi-Region Air Quality Index (AQI)](#2-️-live-weather--multi-region-air-quality-index-aqi)
   - [3. 💤 Smart Idle / AFK Mode with XInput Gamepad Detection](#3--smart-idle--afk-mode-with-xinput-gamepad-detection)
   - [4. 🎮 Automatic Hardware Monitor Switching in Games](#4--automatic-hardware-monitor-switching-in-games)
   - [5. 🌈 10-Zone Mouse RGB & SteelSeries GG Profile Sync](#5--10-zone-mouse-rgb--steelseries-gg-profile-sync)
   - [6. 📐 Adaptive Clock Layouts & Anti-Jitter Digits](#6--adaptive-clock-layouts--anti-jitter-digits)
   - [7. 🎬 Streaming & Video Playback Hysteresis (Prime Video / Netflix)](#7--streaming--video-playback-hysteresis-prime-video--netflix)
   - [8. 🛡️ Fault-Tolerant Architecture & Stability Hardening](#8-️-fault-tolerant-architecture--stability-hardening)
-- [📈 Version History (`v1.00` → `v1.46`)](#-version-history-v100--v146)
+- [📈 Version History (`v1.00` → `v1.47`)](#-version-history-v100--v147)
 - [🚀 Complete Feature Overview](#-complete-feature-overview)
   - [🎵 Dynamic Media Dashboard](#-dynamic-media-dashboard)
   - [🌡️ Ghost-Monitor (Hardware Stats & FPS)](#️-ghost-monitor-hardware-stats--fps)
@@ -46,17 +46,27 @@
 
 ## 🆕 Major New Features & Expansions (by gizmous)
 
-Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.46`)** introduces **4 major new functional modules (`+0.40`)** and **6 core architectural & UX upgrades (`+0.06`)**:
+Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.47`)** introduces **4 major new functional modules (`+0.40`)** and **7 core architectural & UX upgrades (`+0.07`)**:
 
 ### 1. 🎧 Wireless Headset Battery & Native USB HID Telemetry
 - **Direct USB HID Battery Readout**: Communicates directly with SteelSeries USB wireless transceivers via native Win32 HID reports (`[0x06, 0xb0]`) to read real-time battery levels for **SteelSeries Arctis Nova 7** (as well as compatible Cloud III / HyperX wireless headsets) without relying on heavy background services.
 - **Vertical 4-Segment Battery Indicator**: Renders a crisp vertical 4-bar battery icon in the top-right corner of the clock display, with an optional numeric percentage (`0%`–`100%`) centered directly underneath.
 - **Smart Power-Off & Range Detection**: Automatically detects when the wireless headset is powered off or out of range and hides the battery widget immediately so stale battery values are never displayed.
 
-### 2. 🌦️ Live Weather & European Air Quality Index (`AQI`)
+### 2. 🌦️ Live Weather & Multi-Region Air Quality Index (`AQI`)
 - **Zero-API-Key Weather Engine**: Powered by Open-Meteo Geocoding, Weather Forecast, and Air Quality APIs — simply type your city name in **Settings → Display → Weather Widget** and save.
-- **Clock Screen Weather Mini-Widget**: Displays a custom pixel-art weather condition icon (clear sky, clouds, drizzle/rain, snow, thunderstorm), live temperature (`°C`), and **European Air Quality Index (`AQI`)** on the left side of the clock screen.
-- **Full-Screen Weather Overlay (`F8`)**: Press the Weather hotkey (default **`F8`**) at any time—even inside fullscreen games—to summon a dedicated full-screen weather card showing your city name, weather description, temperature, and live `AQI` for a configurable duration (default: 5 seconds).
+- **Configurable Global / Regional AQI Standards**: Choose your preferred Air Quality Index area/scale in Settings (**Obszar / Skala AQI**):
+  - **`Auto (Wg miasta / By City)`**: Automatically selects the matching regional AQI standard based on the geocoded country and timezone of your chosen city.
+  - **`Europa (EU - CAQI)`**: European Environment Agency Common Air Quality Index (`0–100+`).
+  - **`USA / Ameryki (US - EPA)`**: United States EPA Air Quality Index (`0–500`).
+  - **`Polska (PL - GIOŚ)`**: Polish Chief Inspectorate of Environmental Protection (GIOŚ) scale calculated from live `PM2.5`, `PM10`, `NO₂`, `O₃`, and `SO₂` concentrations (`0–100+`).
+  - **`Wielka Brytania (UK - DAQI)`**: UK DEFRA Daily Air Quality Index (`1–10`).
+  - **`Chiny (CN - MEP)`**: Chinese Ministry of Ecology and Environment (`HJ 633-2012`, `0–500`).
+  - **`Indie (IN - NAQI)`**: Indian CPCB National Air Quality Index (`0–500`).
+  - **`Kanada (CA - AQHI)`**: Canadian Air Quality Health Index (`1–10+`).
+  - **`Australia (AU - NEPM)`**: Australian National Environment Protection Measure AQI (`0–100+%`).
+- **Clock Screen Weather Mini-Widget**: Displays a custom pixel-art weather condition icon (clear sky, clouds, drizzle/rain, snow, thunderstorm), live temperature (`°C`), and **`AQI`** on the left side of the clock screen.
+- **Full-Screen Weather Overlay (`F8`)**: Press the Weather hotkey (default **`F8`**) at any time—even inside fullscreen games—to summon a dedicated full-screen weather card showing your city name, weather description, temperature, and regional `AQI` (e.g., `EU AQI: 30`, `US AQI: 46`, `PL AQI: 28`) for a configurable duration (default: 5 seconds).
 
 ### 3. 💤 Smart Idle / AFK Mode with XInput Gamepad Detection
 - **OLED Burn-In Protection & RGB Blackout**: Automatically blanks the OLED display and turns off both keyboard and mouse RGB lighting after a configurable period of user inactivity (default: 5 minutes).
@@ -87,14 +97,14 @@ Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.46`)
 
 ---
 
-## 📈 Version History (`v1.00` → `v1.46`)
+## 📈 Version History (`v1.00` → `v1.47`)
 
 | Version | Category | Summary of Changes |
 | :--- | :---: | :--- |
 | **`v1.00`** | Base | Original **OLED Customizer** foundation by **0z-zy** (inspired by **Firewee**). |
 | **`v1.10`** | 🆕 Major (`+0.10`) | **Auto-Switch to Hardware Monitor in Games** via PresentMon FPS detection. |
 | **`v1.20`** | 🆕 Major (`+0.10`) | **Wireless Headset Battery via USB HID** (`[0x06, 0xb0]`) + vertical 4-bar icon & power-off detection. |
-| **`v1.30`** | 🆕 Major (`+0.10`) | **Live Weather & European AQI Module** (clock mini-widget + full-screen `F8` overlay). |
+| **`v1.30`** | 🆕 Major (`+0.10`) | **Live Weather & Air Quality (`AQI`) Module** (clock mini-widget + full-screen `F8` overlay). |
 | **`v1.40`** | 🆕 Major (`+0.10`) | **Smart Idle / AFK Mode** (OLED & RGB blackout + XInput controller activity detection). |
 | **`v1.41`** | ✨ Fix (`+0.01`) | **Compact Polish Day Names & Short Year** (`dd/mm/yy`) for side-widget compatibility. |
 | **`v1.42`** | ✨ Fix (`+0.01`) | **Bundled `sqlite3.dll` Fault Tolerance** & thread-safe Settings window re-entry fix. |
@@ -102,6 +112,7 @@ Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.46`)
 | **`v1.44`** | ✨ Fix (`+0.01`) | **Memory, Threading & Single-Instance Hardening** (orphan process cleanup & PIL handle fixes). |
 | **`v1.45`** | ✨ Fix (`+0.01`) | **SMTC / Prime Video Playback Hysteresis** (2.5s grace period & `now-playing.exe` suspension). |
 | **`v1.46`** | ✨ Fix (`+0.01`) | **10-Zone Mouse RGB (`rgb-zoned-device`) & SteelSeries GG Config Switch Sync**. |
+| **`v1.47`** | ✨ Fix (`+0.01`) | **Multi-Region / Global AQI Standards** (`Auto`, `EU CAQI`, `US EPA`, `Polska GIOŚ`, `UK DAQI`, `China MEP`, `India NAQI`, `Canada AQHI`, `Australia NEPM`). |
 
 ---
 
@@ -143,7 +154,7 @@ Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.46`)
 | Action | Default Key | Notes |
 | :--- | :--- | :--- |
 | **Show System Stats** | `Insert` | Quick peek at CPU / GPU / RAM / FPS |
-| **Show Weather Overlay** *(🆕 NEW)* | `F8` | Summons full-screen city weather & European AQI |
+| **Show Weather Overlay** *(🆕 NEW)* | `F8` | Summons full-screen city weather & multi-region AQI |
 | **Mute Microphone (Primary)** | `Pause` | Supports keyboard keys & mouse buttons (`M4` / `M5`) |
 | **Mute Microphone (Optional)** | *Not set* | Bind a second mute key in Settings |
 | **Toggle Calculator** | `Ctrl + Insert` | Numpad input, `Esc` to close |
@@ -169,7 +180,7 @@ Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.46`)
 ### 1. Standalone Executable
 1. Download **`SteelSeries-OLED-Hub.exe`** from [Releases](https://github.com/gizmous/SteelSeries_OLED_Hub/releases).
 2. Launch `SteelSeries-OLED-Hub.exe` — the app will appear in your System Tray.
-3. Right-click the tray icon and select **⚙️ Settings...** to customize your display, weather city, headset battery, hotkeys, and RGB color.
+3. Right-click the tray icon and select **⚙️ Settings...** to customize your display, weather city, AQI region/standard, headset battery, hotkeys, and RGB color.
 
 ### 2. Running or Building from Source
 ```powershell
@@ -203,7 +214,7 @@ SteelSeries_OLED_Hub/
 ├── LICENSE                      # MIT License (gizmous & original copyright 0z-zy / Firewee)
 ├── README.md                    # Project documentation
 ├── main.py                      # Application entry point & single-instance guard
-├── version.py                   # Version (1.46) and author metadata
+├── version.py                   # Version (1.47) and author metadata
 ├── version_info.py              # Windows executable version metadata
 ├── SteelSeries-OLED-Hub.spec    # PyInstaller build specification
 ├── requirements.txt             # Python dependencies
@@ -218,12 +229,12 @@ SteelSeries_OLED_Hub/
 
 ## 📚 Acknowledgments & Credits
 
-**SteelSeries OLED & RGB Hub (`v1.46`)** stands on the shoulders of great open-source projects and **includes all features of the original application** alongside major new expansions:
+**SteelSeries OLED & RGB Hub (`v1.47`)** stands on the shoulders of great open-source projects and **includes all features of the original application** alongside major new expansions:
 
-- **Author & Maintainer (`v1.46`)**: **[gizmous](https://github.com/gizmous)** — author of the `v1.10`–`v1.46` expansions (Wireless Headset Battery HID, Live Weather & European AQI, Smart AFK + XInput Gamepad detection, Auto-Game Hardware Monitor, 10-Zone Mouse RGB & GG Config Sync, SMTC/Prime Video Hysteresis, and Adaptive Anti-Jitter Clock Layouts).
+- **Author & Maintainer (`v1.47`)**: **[gizmous](https://github.com/gizmous)** — author of the `v1.10`–`v1.47` expansions (Wireless Headset Battery HID, Live Weather & Multi-Region Global AQI, Smart AFK + XInput Gamepad detection, Auto-Game Hardware Monitor, 10-Zone Mouse RGB & GG Config Sync, SMTC/Prime Video Hysteresis, and Adaptive Anti-Jitter Clock Layouts).
 - **Original Application & Inspiration**: **[0z-zy](https://github.com/0z-zy)** — creator of the original [OLED Customizer](https://github.com/0z-zy/OLED_Customizer), which served as the direct inspiration and base for this project. All original features created by **0z-zy** are fully preserved in this edition.
 - **Foundational Inspiration**: **[Firewee](https://github.com/Firewee)** — creator of [SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker), whose core OLED & Spotify integration inspired the original project.
 
 ---
 
-**Developed and Expanded by [gizmous](https://github.com/gizmous) (`v1.46`) • Includes all original features & heavily inspired by [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) by [0z-zy](https://github.com/0z-zy) & [Firewee](https://github.com/Firewee).**
+**Developed and Expanded by [gizmous](https://github.com/gizmous) (`v1.47`) • Includes all original features & heavily inspired by [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) by [0z-zy](https://github.com/0z-zy) & [Firewee](https://github.com/Firewee).**

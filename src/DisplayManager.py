@@ -69,9 +69,7 @@ class DisplayManager:
         else:
             self.spotify_api = None
         
-        init_rgb = self.user_preferences.get_preference("rgb_color") or [255, 255, 255]
-        init_rgb_enabled = bool(self.user_preferences.get_preference("rgb_enabled"))
-        self.steelseries_api = SteelSeriesAPI(initial_rgb=init_rgb, initial_active=init_rgb_enabled)
+        self.steelseries_api = SteelSeriesAPI()
         
         # Lock for thread-safety across shared state like self.player
         self._lock = __import__('threading').Lock()
@@ -174,7 +172,6 @@ class DisplayManager:
         self._gg_was_running = bool(self.steelseries_api.address)
         self._gg_check_ts = 0.0
         self._gg_running_cached = False
-        self._last_rgb_send_ms = 0
         self._last_lighting_state = None
 
         # STICKY SOURCE logic
@@ -202,18 +199,10 @@ class DisplayManager:
         # Config hot-reloading tracker
         self._config_file_path = self.user_preferences.config_path
         self._last_config_mtime = 0
-        self._engine_db_paths = [
-            r"C:\ProgramData\SteelSeries\GG\apps\engine\db\database.db-wal",
-            r"C:\ProgramData\SteelSeries\GG\apps\engine\db\database.db",
-        ]
-        self._last_engine_db_mtime = 0
         try:
             import os
             if os.path.exists(self._config_file_path):
                 self._last_config_mtime = os.path.getmtime(self._config_file_path)
-            engine_mtimes = [os.path.getmtime(p) for p in self._engine_db_paths if os.path.exists(p)]
-            if engine_mtimes:
-                self._last_engine_db_mtime = max(engine_mtimes)
         except Exception:
             pass
         self._last_config_check_ts = time()
@@ -767,12 +756,7 @@ class DisplayManager:
         if hasattr(self, "weather"):
             self.weather.update_preferences(self.user_preferences)
 
-        color = self.user_preferences.get_preference("rgb_color")
-        if color and len(color) == 3 and hasattr(self, "steelseries_api"):
-            try:
-                self.steelseries_api.update_rgb_color(color[0], color[1], color[2])
-            except Exception:
-                pass
+        self._last_lighting_state = None
 
         # Hotkeys — convert preference strings to VK codes for the raw hook
         self._reload_hotkey_vks()
@@ -800,6 +784,22 @@ class DisplayManager:
             # If not ready (missing tokens) but config didn't change, we do NOTHING directly here.
             # The user must fix the config in the settings window to trigger the 'changed' path.
             # OR we could silently try to fetch if prompt_user=False? No, let's keep it clean.
+
+    def _sync_lighting_state(self):
+        """
+        0 = AFK blackout ([0, 0, 0] on keyboard and mouse)
+        1 = Active (LIGHTING event unbound so SteelSeries GG Engine controls colors natively)
+        """
+        target_lighting = 0 if self._is_afk else 1
+        if self._last_lighting_state != target_lighting:
+            try:
+                if self.steelseries_api.set_lighting(not self._is_afk):
+                    self._last_lighting_state = target_lighting
+                else:
+                    self._last_lighting_state = None
+            except Exception as e:
+                self._last_lighting_state = None
+                logger.debug(f"Failed to set lighting state: {e}")
 
     # _parse_key removed — replaced by _key_str_to_vk and _reload_hotkey_vks above
 
@@ -873,7 +873,7 @@ class DisplayManager:
                 self._last_lighting_state = None
 
             now_sec = time()
-            # Automatic configuration hot-reloading (e.g. when saved from SteelSeries GG Settings GUI or Engine Config switch)
+            # Automatic configuration hot-reloading (e.g. when saved from Settings GUI)
             if now_sec - self._last_config_check_ts > 1.5:
                 self._last_config_check_ts = now_sec
                 try:
@@ -884,33 +884,15 @@ class DisplayManager:
                             self._last_config_mtime = mtime
                             logger.info("External configuration change detected, reloading preferences...")
                             self.load_preferences()
-                            self._last_lighting_state = None
                         elif not self._last_config_mtime:
                             self._last_config_mtime = mtime
-
-                    engine_mtimes = [os.path.getmtime(p) for p in self._engine_db_paths if os.path.exists(p)]
-                    if engine_mtimes:
-                        cur_engine_mtime = max(engine_mtimes)
-                        if self._last_engine_db_mtime and cur_engine_mtime > self._last_engine_db_mtime:
-                            self._last_engine_db_mtime = cur_engine_mtime
-                            logger.info("SteelSeries Engine configuration deployment detected, re-applying lighting state...")
-                            self._last_lighting_state = None
-                        elif not self._last_engine_db_mtime:
-                            self._last_engine_db_mtime = cur_engine_mtime
                 except Exception as e:
                     logger.debug("Failed checking config mtime: %s", e)
 
             now_ms = int(now_sec * 1000)
 
-            # 0) Lighting sync & AFK state
-            rgb_pref = self.user_preferences.get_preference("rgb_enabled")
-            target_lighting = 1 if (rgb_pref and not self._is_afk) else 0
-            if self._last_lighting_state != target_lighting:
-                try:
-                    if self.steelseries_api.set_lighting(bool(target_lighting)):
-                        self._last_lighting_state = target_lighting
-                except Exception as e:
-                    logger.debug(f"Failed to set lighting state: {e}")
+            # 0) AFK lighting state sync
+            self._sync_lighting_state()
 
             # 1) YT poll (hızlı)
             self.volume_overlay.update()
@@ -1051,31 +1033,13 @@ class DisplayManager:
                     self._is_afk = new_afk_state
                     self._afk_toggled_time = now_ms
                     logger.info(f"AFK State changed to: {self._is_afk} (idle: {idle_ms}ms)")
-                    rgb_pref = self.user_preferences.get_preference("rgb_enabled")
-                    target = 1 if (rgb_pref and not self._is_afk) else 0
-                    try:
-                        if self.steelseries_api.set_lighting(bool(target)):
-                            self._last_lighting_state = target
-                        else:
-                            self._last_lighting_state = None
-                    except Exception as e:
-                        self._last_lighting_state = None
-                        logger.debug(f"Failed to set lighting state: {e}")
+                    self._sync_lighting_state()
             else:
                 if self._is_afk:
                     self._is_afk = False
                     self._afk_toggled_time = now_ms
                     logger.info("AFK State changed to: False (idle reset)")
-                    rgb_pref = self.user_preferences.get_preference("rgb_enabled")
-                    target = 1 if rgb_pref else 0
-                    try:
-                        if self.steelseries_api.set_lighting(bool(target)):
-                            self._last_lighting_state = target
-                        else:
-                            self._last_lighting_state = None
-                    except Exception as e:
-                        self._last_lighting_state = None
-                        logger.debug(f"Failed to set lighting state: {e}")
+                    self._sync_lighting_state()
 
             frame_data = None
 

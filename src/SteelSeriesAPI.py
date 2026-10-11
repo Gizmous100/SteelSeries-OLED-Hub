@@ -44,11 +44,8 @@ class SteelSeriesAPI:
         self._BACKOFF_DURATIONS = [2.0, 5.0, 10.0]
         self._RESET_THRESHOLD = 10       # Force re-register after this many consecutive errors
         self._is_resetting = False      # Prevent overlapping resets
-        if initial_rgb and len(initial_rgb) == 3:
-            self._current_color = (int(initial_rgb[0]), int(initial_rgb[1]), int(initial_rgb[2]))
-        else:
-            self._current_color = (255, 255, 255)
-        self._lighting_active = bool(initial_active)
+        self._lighting_active = True
+        self._lighting_bound = False
         
         # Pre-allocate static headers to reduce object churn
         self._static_headers = {
@@ -89,6 +86,7 @@ class SteelSeriesAPI:
                     self.address = "http://" + data["address"]
 
                 # Clean start: register and bind
+                self._lighting_bound = False
                 self.register_game()
                 self.bind_game_event()
 
@@ -111,43 +109,19 @@ class SteelSeriesAPI:
         try:
             logger.info("Resetting SteelSeries connection...")
             self.address = ""
+            self._lighting_bound = False
             # Limit retries during resets to avoid blocking the main thread forever
             self.retrieve_address(retries=2)
         finally:
             self._is_resetting = False
 
-    def bind_game_event(self, rgb_color=None):
-        # Apex 7 Pro OLED = 128x40 (640 byte)
-        dummy_128x40 = [0 for _ in range(640)]
-
-        # 1. Screen handler for OLED
-        update_handlers = [
-            {
-                "device-type": "screened-128x40",
-                "mode": "screen",
-                "datas": [
-                    {"has-text": False, "image-data": dummy_128x40}
-                ]
-            }
-        ]
-
-        self.send_data("/bind_game_event", {
-            "game": GAME,
-            "event": EVENT,
-            "value_optional": True,
-            "handlers": update_handlers
-        })
-
-        # 2. Lighting handler for Keyboard and Mouse (Rival 5 / multi-zone mice)
-        # Value 0 = AFK (blackout [0,0,0])
-        # Value 1 = Active (user color [r,g,b])
-        if rgb_color is not None:
-            self._current_color = tuple(int(c) for c in rgb_color)
-        r, g, b = self._current_color if self._current_color is not None else (255, 255, 255)
-
+    def _bind_lighting_event(self) -> bool:
+        """
+        Bind the LIGHTING event for Keyboard and Mouse RGB zones during AFK blackout:
+        - Value 0 = AFK blackout [0, 0, 0]
+        """
         color_ranges = [
-            {"low": 0, "high": 0, "color": {"red": 0, "green": 0, "blue": 0}},
-            {"low": 1, "high": 1, "color": {"red": r, "green": g, "blue": b}}
+            {"low": 0, "high": 1, "color": {"red": 0, "green": 0, "blue": 0}}
         ]
 
         lighting_handlers = [
@@ -177,7 +151,7 @@ class SteelSeriesAPI:
                 "color": color_ranges
             })
 
-        self.send_data("/bind_game_event", {
+        ok = self.send_data("/bind_game_event", {
             "game": GAME,
             "event": "LIGHTING",
             "min_value": 0,
@@ -185,11 +159,58 @@ class SteelSeriesAPI:
             "value_optional": True,
             "handlers": lighting_handlers
         })
+        self._lighting_bound = bool(ok)
+        if ok:
+            logger.info("Bound LIGHTING event for AFK blackout (Keyboard + Mouse RGB [0, 0, 0])")
+        return bool(ok)
 
-        # Immediately apply current lighting state so GameSense never leaves the mouse on default orange
-        self.set_lighting(getattr(self, "_lighting_active", True))
+    def release_lighting_to_gg(self, force: bool = False) -> bool:
+        """
+        Remove the GameSense LIGHTING event binding so SteelSeries GG Engine
+        retains 100% native control of active keyboard & mouse illumination configs.
+        """
+        if not self.address:
+            return False
+        if force or getattr(self, "_lighting_bound", False):
+            self.send_data("/remove_game_event", {
+                "game": GAME,
+                "event": "LIGHTING"
+            }, ignore_errors=True)
+            self._lighting_bound = False
+            logger.info("Released LIGHTING event to SteelSeries GG Engine native configs")
+        return True
 
-        logger.info("Bound game events: UPDATE (OLED) and LIGHTING (Keyboard + Mouse RGB [%d, %d, %d])", r, g, b)
+    def bind_game_event(self):
+        # Apex 7 Pro OLED = 128x40 (640 byte)
+        dummy_128x40 = [0 for _ in range(640)]
+
+        # 1. Screen handler for OLED
+        update_handlers = [
+            {
+                "device-type": "screened-128x40",
+                "mode": "screen",
+                "datas": [
+                    {"has-text": False, "image-data": dummy_128x40}
+                ]
+            }
+        ]
+
+        self.send_data("/bind_game_event", {
+            "game": GAME,
+            "event": EVENT,
+            "value_optional": True,
+            "handlers": update_handlers
+        })
+
+        # 2. Only bind LIGHTING when in AFK blackout; otherwise release LIGHTING so
+        # SteelSeries GG Engine controls keyboard and mouse colors natively.
+        if not getattr(self, "_lighting_active", True):
+            self._bind_lighting_event()
+            self.set_lighting(False)
+        else:
+            self.release_lighting_to_gg(force=True)
+
+        logger.info("Bound game event: UPDATE (OLED 128x40)")
 
     def send_frame(self, image_128x40):
         if not isinstance(image_128x40, (list, bytes, bytearray)):
@@ -209,25 +230,25 @@ class SteelSeriesAPI:
         })
 
     def set_lighting(self, active: bool):
-        """Send lighting event: value 1 (user color) or value 0 (AFK blackout)."""
-        val = 1 if active else 0
+        """
+        Apply AFK lighting transition:
+        - active=False (AFK mode): bind LIGHTING and send value 0 ([0, 0, 0] blackout).
+        - active=True (Wake / Normal): remove LIGHTING event so SteelSeries GG Engine
+          restores the active keyboard & mouse config colors natively.
+        """
         self._lighting_active = bool(active)
-        return self.send_data("/game_event", {
-            "game": GAME,
-            "event": "LIGHTING",
-            "data": {"value": val}
-        })
 
-    def update_rgb_color(self, r, g, b):
-        """Update active color mapping if it changed."""
-        new_color = (int(r), int(g), int(b))
-        if getattr(self, "_current_color", None) != new_color:
-            self._current_color = new_color
-            if self.address:
-                self.bind_game_event(rgb_color=new_color)
+        if not active:
+            if not getattr(self, "_lighting_bound", False):
+                if not self._bind_lighting_event():
+                    return False
+            return self.send_data("/game_event", {
+                "game": GAME,
+                "event": "LIGHTING",
+                "data": {"value": 0}
+            })
 
-    def send_rgb(self, r, g, b):
-        self.update_rgb_color(r, g, b)
+        return self.release_lighting_to_gg(force=True)
 
     def clear_rgb(self):
         self.set_lighting(False)

@@ -2,7 +2,7 @@
 
 **The ultimate music, hardware, weather, headset battery, and RGB ambiance dashboard for your SteelSeries Keyboard & Peripherals.**
 
-![Version](https://img.shields.io/badge/version-1.49-blue?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-1.50-blue?style=for-the-badge)
 ![Author](https://img.shields.io/badge/author-gizmous-orange?style=for-the-badge)
 ![Inspired By](https://img.shields.io/badge/inspired_by-OLED_Customizer_(0z--zy)-lightgrey?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)
@@ -12,7 +12,7 @@
 
 > [!NOTE]
 > ### 💡 Inspiration & Project Heritage
-> **SteelSeries OLED & RGB Hub (`v1.49`)** is **heavily inspired by the original [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) created by [0z-zy](https://github.com/0z-zy)** (and the foundational [SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker) by **[Firewee](https://github.com/Firewee)**).  
+> **SteelSeries OLED & RGB Hub (`v1.50`)** is **heavily inspired by the original [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) created by [0z-zy](https://github.com/0z-zy)** (and the foundational [SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker) by **[Firewee](https://github.com/Firewee)**).  
 > It **retains and includes all features of the original application** (Spotify & Windows SMTC media dashboard, CPU/GPU/RAM/FPS Ghost-Monitor, adaptive volume control, Discord RPC & global mic mute, OLED calculator, 4 clock themes, and SteelSeries profile backups), while being significantly expanded by **[gizmous](https://github.com/Gizmous100)** with brand-new wireless headset battery telemetry, live weather & multi-region global AQI, 9-language OLED localization, smart AFK power-saving with gamepad detection, 10-zone mouse RGB & profile sync, and anti-jitter adaptive rendering.
 
 ---
@@ -28,7 +28,7 @@
   - [6. 📐 Adaptive Clock Layouts, Anti-Jitter Digits & 9-Language OLED](#6--adaptive-clock-layouts-anti-jitter-digits--9-language-oled)
   - [7. 🎬 Streaming & Video Playback Hysteresis (Prime Video / Netflix)](#7--streaming--video-playback-hysteresis-prime-video--netflix)
   - [8. 🛡️ Fault-Tolerant Architecture & Stability Hardening](#8-️-fault-tolerant-architecture--stability-hardening)
-- [📈 Version History (`v1.00` → `v1.49`)](#-version-history-v100--v149)
+- [📈 Version History (`v1.00` → `v1.50`)](#-version-history-v100--v150)
 - [🚀 Complete Feature Overview](#-complete-feature-overview)
   - [🎵 Dynamic Media Dashboard](#-dynamic-media-dashboard)
   - [🌡️ Ghost-Monitor (Hardware Stats & FPS)](#️-ghost-monitor-hardware-stats--fps)
@@ -82,10 +82,10 @@ Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.49`)
 - **Smart 3D Game Detection**: Enable *"Auto-switch to System Stats in Games"* in Settings to automatically switch the OLED screen from the clock to the live **CPU / GPU / RAM / FPS Hardware Monitor** whenever a 3D game is launched (detected via PresentMon telemetry).
 - **Seamless Return**: Automatically switches back to your clock layout as soon as you exit the game.
 
-### 5. 🌈 10-Zone Mouse RGB & SteelSeries GG Profile Sync
-- **Full 10-Zone Mouse RGB Support (`rgb-zoned-device`)**: Extends GameSense lighting control beyond keyboards (`rgb-per-key-zones`) and basic 2-zone mice (`wheel`, `logo`) to support all **10 independent RGB zones (`one` through `ten`)** on modern multi-zone SteelSeries mice such as the **Rival 5**. Eliminates the issue where multi-zone mice remained stuck on factory SteelSeries Orange.
-- **Live SteelSeries GG Config Watcher**: Monitors the SteelSeries Engine database (`database.db`) in the background so switching hardware configs/profiles in SteelSeries GG immediately re-applies your chosen RGB color.
-- **Transition-Only Lighting Dispatch**: Sends GameSense `LIGHTING` events strictly on state transitions (startup, AFK entry/exit, color change, or GG config switch) rather than inside the 10 FPS render loop—preventing HTTP 429 rate-limiting and mouse profile lockups.
+### 5. 🌈 10-Zone Mouse RGB & Native SteelSeries GG Profile Coexistence
+- **100% Native SteelSeries GG Engine Control (`release_lighting_to_gg`)**: During active usage, the app keeps the GameSense `LIGHTING` event unbound via `/remove_game_event` so **SteelSeries GG (Engine / Prism)** has 100% native control over your keyboard (**Apex 7**) and mouse (**Rival 5**) illumination configs, gradients, and multi-color effects—removing the legacy static *Match Keyboard Color* override that previously conflicted with GG profiles.
+- **Full 10-Zone Mouse & Keyboard AFK Blackout (`rgb-zoned-device` + `rgb-per-key-zones`)**: When entering Idle / AFK mode, the app dynamically binds `LIGHTING` (`[0, 0, 0]`) across all **10 independent RGB mouse zones (`one` through `ten`)** and all keyboard keys, turning off all LEDs alongside the OLED display—and immediately releases control back to SteelSeries GG upon wake.
+- **Transition-Only Lighting Dispatch**: Sends GameSense `LIGHTING` events strictly on AFK state transitions (entering/exiting idle) rather than inside the 10 FPS render loop—preventing HTTP 429 rate-limiting and mouse profile lockups.
 
 ### 6. 📐 Adaptive Clock Layouts, Anti-Jitter Digits & 9-Language OLED
 - **Dynamic Horizontal Layout Fitting**: All 4 clock themes (*Standard*, *Big Timer*, *Date Focused*, and *Analog*) dynamically compute available horizontal space `[x_left .. x_right]` and automatically adjust font sizes and centering when the Weather widget (`38px` left) and/or Headset Battery widget (`19px`/`12px` right) are active. Tested across all widget/format combinations with zero pixel overlap.
@@ -104,7 +104,7 @@ Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.49`)
 
 ---
 
-## 📈 Version History (`v1.00` → `v1.49`)
+## 📈 Version History (`v1.00` → `v1.50`)
 
 > 📄 **For a complete, detailed description of all changes since the beginning of the project, see [`CHANGELOG.md`](CHANGELOG.md).**
 
@@ -124,6 +124,7 @@ Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.49`)
 | **`v1.47`** | ✨ Fix (`+0.01`) | **Multi-Region / Global AQI Standards** (`Auto`, `EU CAQI`, `US EPA`, `Poland GIOS`, `UK DAQI`, `China MEP`, `India NAQI`, `Canada AQHI`, `Australia NEPM`). |
 | **`v1.48`** | ✨ Fix (`+0.01`) | **9-Language OLED Support (Clock Days & Weather)** (`EN`, `PL`, `DE`, `ES`, `FR`, `IT`, `PT`, `TR`, `NL`) + localized geocoding & OLED visual previews. |
 | **`v1.49`** | ✨ Fix (`+0.01`) | **Discord RPC Snowflake Validation, Setup Helpers & Initial Sync Fix**. |
+| **`v1.50`** | ✨ Fix (`+0.01`) | **Native SteelSeries GG Config Lighting Coexistence & AFK Restore Fix**. |
 
 ---
 
@@ -234,11 +235,11 @@ To sync your Discord microphone mute/deafen state and toggle Discord mute via ho
 ```text
 SteelSeries_OLED_Hub/
 ├── .gitignore                   # Git ignore rules for build/dist/cache files
-├── CHANGELOG.md                 # Full version-by-version changelog (v1.00 -> v1.49)
+├── CHANGELOG.md                 # Full version-by-version changelog (v1.00 -> v1.50)
 ├── LICENSE                      # MIT License (gizmous & original copyright 0z-zy / Firewee)
 ├── README.md                    # Project documentation
 ├── main.py                      # Application entry point & single-instance guard
-├── version.py                   # Version (1.49) and author metadata
+├── version.py                   # Version (1.50) and author metadata
 ├── version_info.py              # Windows executable version metadata
 ├── SteelSeries-OLED-Hub.spec    # PyInstaller build specification
 ├── requirements.txt             # Python dependencies
@@ -253,12 +254,12 @@ SteelSeries_OLED_Hub/
 
 ## 📚 Acknowledgments & Credits
 
-**SteelSeries OLED & RGB Hub (`v1.49`)** stands on the shoulders of great open-source projects and **includes all features of the original application** alongside major new expansions:
+**SteelSeries OLED & RGB Hub (`v1.50`)** stands on the shoulders of great open-source projects and **includes all features of the original application** alongside major new expansions:
 
-- **Author & Maintainer (`v1.49`)**: **[gizmous](https://github.com/Gizmous100)** — author of the `v1.10`–`v1.49` expansions (Wireless Headset Battery HID, Live Weather & Multi-Region Global AQI, 9-Language OLED Localization, Smart AFK + XInput Gamepad detection, Auto-Game Hardware Monitor, 10-Zone Mouse RGB & GG Config Sync, SMTC/Prime Video Hysteresis, and Adaptive Anti-Jitter Clock Layouts).
+- **Author & Maintainer (`v1.50`)**: **[gizmous](https://github.com/Gizmous100)** — author of the `v1.10`–`v1.50` expansions (Wireless Headset Battery HID, Live Weather & Multi-Region Global AQI, 9-Language OLED Localization, Smart AFK + XInput Gamepad detection, Auto-Game Hardware Monitor, 10-Zone Mouse RGB & GG Config Sync, SMTC/Prime Video Hysteresis, and Adaptive Anti-Jitter Clock Layouts).
 - **Original Application & Inspiration**: **[0z-zy](https://github.com/0z-zy)** — creator of the original [OLED Customizer](https://github.com/0z-zy/OLED_Customizer), which served as the direct inspiration and base for this project. All original features created by **0z-zy** are fully preserved in this edition.
 - **Foundational Inspiration**: **[Firewee](https://github.com/Firewee)** — creator of [SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker), whose core OLED & Spotify integration inspired the original project.
 
 ---
 
-**Developed and Expanded by [gizmous](https://github.com/Gizmous100) (`v1.49`) • Includes all original features & heavily inspired by [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) by [0z-zy](https://github.com/0z-zy) & [Firewee](https://github.com/Firewee).**
+**Developed and Expanded by [gizmous](https://github.com/Gizmous100) (`v1.50`) • Includes all original features & heavily inspired by [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) by [0z-zy](https://github.com/0z-zy) & [Firewee](https://github.com/Firewee).**

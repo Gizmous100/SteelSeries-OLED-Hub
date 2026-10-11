@@ -210,7 +210,6 @@ class SettingsGUI:
         self._capture_prev = ""
         self._capture_bind_id = None
         self.vars = {}
-        self.rgb = list(prefs.get_preference("rgb_color") or [0, 212, 170])
         self.current_page = None
         self.pages = {}
         self.nav_buttons = {}
@@ -268,7 +267,7 @@ class SettingsGUI:
         
         nav_items = [
             ("General", "⚙️"), ("Display", "📺"), ("Spotify", "🎵"), 
-            ("Hotkeys", "⌨️"), ("Lighting", "🌈"), ("Advanced", "🔧"), 
+            ("Hotkeys", "⌨️"), ("Advanced", "🔧"), 
             ("Backups", "💾"), ("Logs", "📄")
         ]
         
@@ -359,7 +358,6 @@ class SettingsGUI:
         self.vars["hotkey_mute"] = tk.StringVar(value=self.prefs.get_preference("hotkey_mute") or "")
         self.vars["hotkey_mute_2"] = tk.StringVar(value=self.prefs.get_preference("hotkey_mute_2") or "")
         self.vars["hotkey_calculator"] = tk.StringVar(value=self.prefs.get_preference("hotkey_calculator") or "")
-        self.vars["rgb_enabled"] = tk.BooleanVar(value=bool(self.prefs.get_preference("rgb_enabled")))
         self.vars["scrollbar_padding"] = tk.StringVar(value=str(self.prefs.get_preference("scrollbar_padding") or "2"))
         self.vars["text_padding_left"] = tk.StringVar(value=str(self.prefs.get_preference("text_padding_left") or "30"))
         self.vars["auto_launch_gg"] = tk.BooleanVar(value=bool(self.prefs.get_preference("auto_launch_gg")))
@@ -449,7 +447,7 @@ class SettingsGUI:
         
         tk.Frame(p_disp, bg=Colors.CONTENT, height=10).pack()
         self._header(p_disp, "💤 Idle / AFK Mode")
-        self._toggle_row(p_disp, "Enable Display & Mouse Dimming on Idle", self.vars["afk_enabled"])
+        self._toggle_row(p_disp, "Enable OLED, Keyboard & Mouse Dimming on Idle", self.vars["afk_enabled"])
         self._entry_row(p_disp, "Idle Timeout (minutes)", self.vars["afk_timeout_minutes"], width=10)
         
         self.pages["Display"] = p_disp
@@ -476,13 +474,6 @@ class SettingsGUI:
         self._header(p_hot, "🖩 Calculator")
         self._hotkey_row(p_hot, "Toggle Calculator", self.vars["hotkey_calculator"])
         self.pages["Hotkeys"] = p_hot
-
-        # Lighting
-        p_rgb = tk.Frame(self.content_area, bg=Colors.CONTENT)
-        self._header(p_rgb, "🌈 Ambiance Lighting")
-        self._toggle_row(p_rgb, "Match Keyboard Color", self.vars["rgb_enabled"])
-        self._color_picker_row(p_rgb)
-        self.pages["Lighting"] = p_rgb
 
         # Advanced
         p_adv = tk.Frame(self.content_area, bg=Colors.CONTENT)
@@ -744,14 +735,6 @@ class SettingsGUI:
         var.set(mapped if mapped else self._capture_prev)
         return "break"
 
-    def _color_picker_row(self, p):
-        f = self._row_frame(p); tk.Label(f, text="Color", bg=Colors.CARD_BG, fg=Colors.TEXT_MAIN).pack(side="left", padx=15)
-        tk.Button(f, text="PICK", command=lambda: self._on_color_pick(f)).pack(side="right", padx=15)
-
-    def _on_color_pick(self, f):
-        c = colorchooser.askcolor()
-        if c[1]: self.rgb = [int(x) for x in c[0]]
-
     def _check_updates(self):
         def worker():
             available, latest = is_update_available()
@@ -784,7 +767,7 @@ class SettingsGUI:
                 self.prefs.preferences[k] = val
             
             self.prefs.preferences["use_polish_days"] = (self.prefs.preferences.get("oled_language") == "PL")
-            self.prefs.preferences["rgb_color"] = self.rgb
+            self.prefs.preferences["rgb_enabled"] = False
             self.prefs.save_preferences()
             set_startup(self.vars["run_on_start"].get())
             

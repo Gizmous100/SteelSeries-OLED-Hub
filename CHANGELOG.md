@@ -4,7 +4,18 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 **Project Versioning Policy:**
 - **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.49`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.50`).
+
+---
+
+## [`v1.50`] — 2026-10-11 — Native SteelSeries GG Config Lighting & AFK Blackout Restoration
+### ✨ Improvements & Fixes (`+0.01`)
+- **100% Native SteelSeries GG Engine Config Control (`src/SteelSeriesAPI.py`, `src/DisplayManager.py`, `src/SettingsWindow.py`):**
+  - Removed the legacy *Match Keyboard Color* (`Lighting` tab / static single-color override) which previously bound a persistent GameSense `LIGHTING` event that overwrote multi-color gradients, waves, and per-device configs selected in **SteelSeries GG (Engine / Prism)** on both keyboards (**Apex 7**) and mice (**Rival 5**).
+  - During normal desktop and gaming usage (`_is_afk = False`), the app now calls `release_lighting_to_gg()` (`/remove_game_event` for `"LIGHTING"`), giving **SteelSeries GG** 100% uninterrupted native control over all keyboard and mouse RGB zones and profile switches.
+- **AFK Blackout & Instant SteelSeries GG Config Restoration on Wake:**
+  - Entering Idle / AFK mode (`_is_afk = True`) dynamically binds the GameSense `LIGHTING` handler and sends `value: 0` (`[0, 0, 0]`) across keyboard (`rgb-per-key-zones`) and all 10 mouse zones (`rgb-zoned-device` `one`–`ten` + `wheel`/`logo`) to turn off all LEDs alongside the OLED display.
+  - Waking from AFK (`_is_afk = False`) immediately removes the `LIGHTING` event via `/remove_game_event` (`release_lighting_to_gg()`), restoring the active SteelSeries GG illumination config on both keyboard and mouse.
 
 ---
 

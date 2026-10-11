@@ -22,6 +22,7 @@ class SteelSeriesAPI:
             path.join(programdata, "SteelSeries", "SteelSeries GG", "coreProps.json"),
         ]
         self.address = ""
+        self.encrypted_address = ""
         
         # Use urllib3 PoolManager directly for maximum performance and minimal object churn.
         # requests.Session creates many heavy objects (Headers, CaseInsensitiveDict, etc.)
@@ -46,6 +47,7 @@ class SteelSeriesAPI:
         self._is_resetting = False      # Prevent overlapping resets
         self._lighting_active = True
         self._lighting_bound = False
+        self._last_lighting_release_ts = 0.0
         
         # Pre-allocate static headers to reduce object churn
         self._static_headers = {
@@ -84,9 +86,12 @@ class SteelSeriesAPI:
                 with open(coreprops, "r", encoding="utf-8") as f:
                     data = loads(f.readline())
                     self.address = "http://" + data["address"]
+                    enc_addr = data.get("encryptedAddress")
+                    self.encrypted_address = ("https://" + enc_addr) if enc_addr else ""
 
                 # Clean start: register and bind
                 self._lighting_bound = False
+                self._last_lighting_release_ts = 0.0
                 self.register_game()
                 self.bind_game_event()
 
@@ -109,11 +114,55 @@ class SteelSeriesAPI:
         try:
             logger.info("Resetting SteelSeries connection...")
             self.address = ""
+            self.encrypted_address = ""
             self._lighting_bound = False
+            self._last_lighting_release_ts = 0.0
             # Limit retries during resets to avoid blocking the main thread forever
             self.retrieve_address(retries=2)
         finally:
             self._is_resetting = False
+
+    def _redeploy_engine_active_configs(self):
+        """
+        Redeploy the active SteelSeries GG Engine configuration on connected RGB
+        devices via encryptedAddress (/configuration/<id>/forceDeploy).
+        This prevents Rival 5 1-frame steady profiles from staying on hardware
+        default orange (#FC4E02) after GameSense's internal-lighting-reset (0x22).
+        """
+        if not self.encrypted_address:
+            return
+        try:
+            import ssl
+            import urllib.request
+            ctx = ssl._create_unverified_context()
+            req = urllib.request.Request(f"{self.encrypted_address}/v1/connectedDevices")
+            with urllib.request.urlopen(req, context=ctx, timeout=1.5) as resp:
+                payload = loads(resp.read().decode("utf-8"))
+            for dev in payload.get("devices", []):
+                if not dev.get("supports_prism_sync") and dev.get("type") not in (0, 1):
+                    continue
+                cfgs = dev.get("configuration_metadata") or []
+                active_cfg = (
+                    next((c for c in cfgs if c.get("active") == 1), None)
+                    or next((c for c in cfgs if c.get("last_deployed") == 1), None)
+                )
+                if active_cfg and active_cfg.get("id"):
+                    cid = active_cfg["id"]
+                    deploy_req = urllib.request.Request(
+                        f"{self.encrypted_address}/configuration/{cid}/forceDeploy",
+                        data=b"",
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(deploy_req, context=ctx, timeout=1.5) as _:
+                        pass
+                    logger.debug(
+                        "Redeployed active Engine config '%s' (%s) on %s",
+                        active_cfg.get("name"),
+                        cid,
+                        dev.get("name"),
+                    )
+        except Exception as e:
+            logger.debug("Engine active config redeploy skipped/failed: %s", e)
 
     def _bind_lighting_event(self) -> bool:
         """
@@ -161,23 +210,42 @@ class SteelSeriesAPI:
         })
         self._lighting_bound = bool(ok)
         if ok:
+            # Wipe GameSense Lisp zones-in-use-cache so the newly bound LIGHTING
+            # zones are detected immediately on the next LIGHTING event.
+            self.send_data("/stop_game", {"game": GAME}, ignore_errors=True)
+            sleep(0.05)
             logger.info("Bound LIGHTING event for AFK blackout (Keyboard + Mouse RGB [0, 0, 0])")
         return bool(ok)
 
     def release_lighting_to_gg(self, force: bool = False) -> bool:
         """
-        Remove the GameSense LIGHTING event binding so SteelSeries GG Engine
-        retains 100% native control of active keyboard & mouse illumination configs.
+        Remove the GameSense LIGHTING event binding, reset the GameSense Lisp VM
+        zones-in-use-cache via /stop_game, and redeploy active SteelSeries GG
+        Engine configurations so keyboard and mouse illumination are 100% native.
         """
         if not self.address:
             return False
-        if force or getattr(self, "_lighting_bound", False):
-            self.send_data("/remove_game_event", {
-                "game": GAME,
-                "event": "LIGHTING"
-            }, ignore_errors=True)
-            self._lighting_bound = False
-            logger.info("Released LIGHTING event to SteelSeries GG Engine native configs")
+        now = time()
+        if not getattr(self, "_lighting_bound", False):
+            if not force or (now - getattr(self, "_last_lighting_release_ts", 0.0) < 2.0):
+                return True
+
+        self.send_data("/remove_game_event", {
+            "game": GAME,
+            "event": "LIGHTING"
+        }, ignore_errors=True)
+        self.send_data("/stop_game", {
+            "game": GAME
+        }, ignore_errors=True)
+        self._lighting_bound = False
+        self._last_lighting_release_ts = time()
+
+        # Wait >30ms for standard-boilerplate.lsp reset: (internal-lighting-reset)
+        # to finish, then redeploy active Engine configs so Rival 5 1-frame steady
+        # profiles do not remain on factory orange (#FC4E02).
+        sleep(0.08)
+        self._redeploy_engine_active_configs()
+        logger.info("Released LIGHTING event to SteelSeries GG Engine native configs")
         return True
 
     def bind_game_event(self):

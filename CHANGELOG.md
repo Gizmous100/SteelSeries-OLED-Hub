@@ -4,7 +4,59 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 **Project Versioning Policy:**
 - **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.50`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.54`).
+
+---
+
+## [`v1.54`] — 2026-10-11 — Show / Hide Mute & Deafen Icons on Clock (Replaces Weather Cloud) & SteelSeries HID Write Guard
+### ✨ New Features & Improvements (`+0.01`)
+- **Show / Hide Mute & Deafen Icons on Clock (`src/Timer.py`, `src/DisplayManager.py`, `src/SettingsWindow.py`, `src/UserPreferences.py`):**
+  - Added a new **`Show Mute / Deafen Icons on Clock (Replaces Weather Cloud)`** toggle (`show_clock_mute_icons`, accessible in both **Settings → Display → 🌦️ Weather & Clock Left Widget** and **Settings → Advanced → 🎙️ Discord Voice & Mute Icons**).
+  - When **Show (`ON`)** is enabled and the microphone or speaker is muted/deafened (`OFF`), the top weather-icon slot (`y = 2..13`, where the weather cloud/sun is drawn) displays only the pure **`mic_off.png` and/or `speaker_mute.png` icon(s)** (without `ON`/`OFF` text), while preserving **`AQI` and temperature (`°C`)** directly underneath.
+  - When both microphone and speaker are unmuted (`ON`), or when **Hide (`OFF`)** is selected, the top slot renders the normal **weather condition icon (clouds/sun/rain)**.
+  - Added a `ToggleSwitch` variable trace (`trace_add("write", ...)`) and live callback so toggling the switch updates both Settings tabs and the keyboard OLED screen immediately in real time.
+- **SteelSeries Arctis Nova 7 Mechanical Mute Switch Guard (`src/HIDListener.py`):**
+  - Skipped sending HyperX Cloud III HID mute output reports (`_do_hardware_mute`) when connected to SteelSeries headsets (`VID_1038`), as the **Arctis Nova 7** uses a purely mechanical latching earcup mute switch that does not emit or accept USB HID mute packets.
+
+---
+
+## [`v1.53`] — 2026-10-11 — Multimedia Settings Tab & Mock Discord Mode (Local Mute/Deafen OLED Icons)
+### ✨ New Features & Improvements (`+0.01`)
+- **`🎵 Multimedia` Settings Tab (`src/SettingsWindow.py`):**
+  - Renamed the **Spotify** sidebar tab to **`🎵 Multimedia`** and moved **Player Layout Adjustments** (`Scrollbar Margin (px)` and `Text Indentation (px)`) from `Advanced` into `Multimedia` with an explanatory caption for the `Standard` music player style.
+- **Mock Discord Mode & Live OLED Mute/Deafen Test (`src/volume.py`, `src/DisplayManager.py`, `src/SettingsWindow.py`, `src/UserPreferences.py`):**
+  - Added **`Mock Discord Mode (Local Mute Icons without OAuth)`** (`discord_mock_enabled`, disabled by default) under **Settings → Advanced → 🎙️ Discord Voice & Mute Icons**.
+  - Allows the 128×40 OLED overlay to display microphone (`mic_on.png` / `mic_off.png`) and deafen (`speaker_mute.png` + `mic_off.png`) icons and synchronize with global mute hotkeys (`Pause`) and physical headset mute buttons without requiring a Discord Developer OAuth2 application.
+  - Added interactive **`🎤 Test Mic Mute on OLED`** and **`🔇 Test Deafen on OLED`** buttons in **Settings → Advanced** with a live status indicator so users can immediately preview and toggle mute/deafen icons on the keyboard OLED screen.
+  - Fixed `VolumeOverlay.get_image()` so deafened state (`_discord_deafened`) renders `speaker_mute.png` on the left and `mic_off.png` on the right without the volume bar overlapping the microphone icon, and prioritized the 2.5s volume/mute overlay above the always-on Hardware Monitor.
+
+---
+
+## [`v1.52`] — 2026-10-11 — Settings GUI Tcl/Tk Thread Crash Fix (`tcl86t.dll`) & Switch Alignment
+### ✨ Improvements & Fixes (`+0.01`)
+- **Persistent Settings UI Thread & Cyclic GC Hardening (`src/SettingsWindow.py`, `src/Systray.py`):**
+  - Fixed a fatal Windows crash (`0x80000003` / `Tcl_Panic("Tcl_AsyncDelete: async handler deleted by the wrong thread")` in `tcl86t.dll`) that occurred when Python's cyclic Garbage Collector ran on the Main Thread after a disposable Settings GUI thread had closed.
+  - Moved `SettingsGUI` execution onto a single persistent daemon thread (`Settings-UI-Thread`) and added explicit widget/variable reference cleanup plus immediate `gc.collect()` on the owning Tcl/Tk thread upon window close.
+  - Updated `_check_updates()` to dispatch `StringVar` updates onto the Tk thread via `root.after(0, ...)`.
+- **Dedicated `💤 AFK Mode` Tab & Settings Layout Alignment (`src/SettingsWindow.py`):**
+  - Moved the **Idle / AFK Mode** settings into a dedicated **`💤 AFK Mode`** sidebar tab for cleaner navigation.
+  - Fixed misaligned and clipped `ToggleSwitch` / `Combobox` / `Entry` controls on rows with long option labels by packing right-side controls before left-side labels, refining typography (`FONT_BODY` 9pt), widening the window to `680×620`, and packing the vertical scrollbar with `before=self.canvas`.
+  - Fixed the bottom version/author credit label on the `General` tab (`Version: v1.52...`) being clipped on the left (`ersion(...)`) by adding explicit left alignment (`anchor="w"`, `justify="left"`, `wraplength=420`) and a clean two-line layout.
+- **Persistent Settings Window on Save & Startup Task Optimization (`src/SettingsWindow.py`, `src/DisplayManager.py`):**
+  - Clicking **SAVE** now applies and persists all settings while keeping the Settings window open (the window closes only when clicking **`×`**).
+  - Avoided invoking `set_startup()` (`Register-ScheduledTask`) when the `Run on Start` toggle has not changed, and synced `_last_config_mtime` on save to prevent duplicate config reloads and unnecessary lighting resets.
+
+---
+
+## [`v1.51`] — 2026-10-11 — Disable AFK Mode in Games & Rival 5 Steady Orange (`#FC4E02`) Fix
+### ✨ New Features & Fixes (`+0.01`)
+- **Disable Idle / AFK Mode During Games (`src/DisplayManager.py`, `src/HardwareMonitor.py`, `src/SettingsWindow.py`, `src/UserPreferences.py`):**
+  - Added a new **`Disable Idle / AFK Mode During Games`** toggle (`afk_disable_in_games`, enabled by default) under **Settings → Display → 💤 Idle / AFK Mode**.
+  - Added cached fullscreen / borderless-windowed and Direct3D Exclusive Fullscreen (`SHQueryUserNotificationState` / `QUNS_RUNNING_D3D_FULL_SCREEN`) game detection (`HardwareMonitor.is_fullscreen_game_active()`, decoupled from `auto_hw_monitor_game`) so the OLED display, keyboard RGB, and mouse RGB never turn off during long cutscenes or controller gameplay.
+  - Automatically resets the effective idle start timestamp while a game is active in the foreground so exiting or Alt-Tabbing from a game does not immediately trigger AFK blackout.
+- **Rival 5 Steady Orange (`#FC4E02`) GameSense Cache & Reset Fix (`src/SteelSeriesAPI.py`):**
+  - Fixed a SteelSeries Engine GameSense Lisp VM quirk (`standard-boilerplate.lsp` / `rival-5.lsp`) where removing `LIGHTING` without `/stop_game` left `zones-in-use-cache` populated (`TYPE-lighting-STEELSERIES_OLED_HUB: 10`), causing `ReinitializeActiveGames` to repeatedly stop mouse color sequences and write `gamesense_orange_rgb` (`#FC4E02`).
+  - Added automatic Engine HTTPS active configuration redeployment (`_redeploy_engine_active_configs` via `coreProps.json["encryptedAddress"]` -> `POST /configuration/<id>/forceDeploy`) after `internal-lighting-reset` (`0x22`) completes, ensuring 1-frame steady color profiles on **Rival 5** never revert to hardware default orange.
 
 ---
 
@@ -12,10 +64,11 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 ### ✨ Improvements & Fixes (`+0.01`)
 - **100% Native SteelSeries GG Engine Config Control (`src/SteelSeriesAPI.py`, `src/DisplayManager.py`, `src/SettingsWindow.py`):**
   - Removed the legacy *Match Keyboard Color* (`Lighting` tab / static single-color override) which previously bound a persistent GameSense `LIGHTING` event that overwrote multi-color gradients, waves, and per-device configs selected in **SteelSeries GG (Engine / Prism)** on both keyboards (**Apex 7**) and mice (**Rival 5**).
-  - During normal desktop and gaming usage (`_is_afk = False`), the app now calls `release_lighting_to_gg()` (`/remove_game_event` for `"LIGHTING"`), giving **SteelSeries GG** 100% uninterrupted native control over all keyboard and mouse RGB zones and profile switches.
+  - During normal desktop and gaming usage (`_is_afk = False`), the app now calls `release_lighting_to_gg()`, giving **SteelSeries GG** 100% uninterrupted native control over all keyboard and mouse RGB zones and profile switches.
 - **AFK Blackout & Instant SteelSeries GG Config Restoration on Wake:**
   - Entering Idle / AFK mode (`_is_afk = True`) dynamically binds the GameSense `LIGHTING` handler and sends `value: 0` (`[0, 0, 0]`) across keyboard (`rgb-per-key-zones`) and all 10 mouse zones (`rgb-zoned-device` `one`–`ten` + `wheel`/`logo`) to turn off all LEDs alongside the OLED display.
-  - Waking from AFK (`_is_afk = False`) immediately removes the `LIGHTING` event via `/remove_game_event` (`release_lighting_to_gg()`), restoring the active SteelSeries GG illumination config on both keyboard and mouse.
+  - Waking from AFK (`_is_afk = False`) immediately removes the `LIGHTING` event and restores the active SteelSeries GG illumination config on both keyboard and mouse.
+
 
 ---
 

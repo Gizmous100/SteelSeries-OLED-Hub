@@ -66,11 +66,26 @@ class Timer:
         self._cache_key = None
         self._cached_image = None
 
-        # Headset battery & weather widgets injected by DisplayManager
+        # Headset battery, weather, and mute/deafen widgets injected by DisplayManager
         self.show_battery = False
         self.show_battery_percent = False   # icon only unless enabled
+        self.show_clock_mute_icons = False
         self.battery_getter = None
         self.weather_getter = None
+        self.mute_status_getter = None
+
+        self.icon_mic_on = self._load_icon("assets/icons/mic_on.png")
+        self.icon_mic_off = self._load_icon("assets/icons/mic_off.png")
+        self.icon_speaker_on = self._load_icon("assets/icons/speaker_high.png")
+        self.icon_speaker_mute = self._load_icon("assets/icons/speaker_mute.png")
+
+    def _load_icon(self, rel_path):
+        try:
+            full_path = fetch_content_path(rel_path)
+            with Image.open(full_path) as raw:
+                return raw.resize((12, 12), Image.Resampling.NEAREST).convert("1")
+        except Exception:
+            return None
 
     def set_style(self, style):
         self.style = style
@@ -124,6 +139,36 @@ class Timer:
             pass
         return None
 
+    def _mute_status(self):
+        if not self.show_clock_mute_icons or not callable(self.mute_status_getter):
+            return None
+        try:
+            res = self.mute_status_getter()
+            if res is not None:
+                is_mic_muted = bool(res[0])
+                is_deafened = bool(res[1])
+                eff_mic_muted = bool(is_mic_muted or is_deafened)
+                if eff_mic_muted or is_deafened:
+                    return (eff_mic_muted, is_deafened)
+        except Exception:
+            pass
+        return None
+
+    def _draw_mute_icons_top(self, image, mute_tuple):
+        """Draw only mic_off / speaker_mute icons (without text) in the top weather-icon slot (y = 2..13)."""
+        eff_mic_muted, is_deafened = mute_tuple
+        if eff_mic_muted and is_deafened:
+            if self.icon_mic_off:
+                image.paste(self.icon_mic_off, (3, 2))
+            if self.icon_speaker_mute:
+                image.paste(self.icon_speaker_mute, (18, 2))
+        elif eff_mic_muted:
+            if self.icon_mic_off:
+                image.paste(self.icon_mic_off, (10, 2))
+        elif is_deafened:
+            if self.icon_speaker_mute:
+                image.paste(self.icon_speaker_mute, (10, 2))
+
     def _draw_battery(self, draw, pct):
         """Vertical headset battery, top-right, level printed under it."""
         w = self.config.width
@@ -154,27 +199,30 @@ class Timer:
             draw.text(((x0 + x1) // 2, bot + 2), str(pct), font=self.FONT_BATT,
                       fill=on, anchor="mt")
 
-    def _draw_weather(self, draw, weather_tuple):
-        """Compact weather icon, AQI, and temperature on the left column (x = 0..30)."""
+    def _draw_weather(self, image, draw, weather_tuple, mute_tuple=None):
+        """Compact weather icon (or mute/deafen icon in top slot), AQI, and temperature on the left column (x = 0..30)."""
         temp, code, aqi = weather_tuple
         on = self.config.primary
         ix, iy = 16, 9
 
-        if code == 0:
-            draw.ellipse((ix - 3, iy - 3, ix + 3, iy + 3), outline=on)
-        elif code in [1, 2, 3]:
-            draw.ellipse((ix - 5, iy - 1, ix - 1, iy + 3), outline=on)
-            draw.ellipse((ix - 2, iy - 4, ix + 4, iy + 2), outline=on)
-        elif code in [61, 63, 65, 80, 81, 82]:
-            draw.ellipse((ix - 5, iy - 5, ix + 5, iy - 1), outline=on)
-            draw.line((ix - 2, iy + 1, ix - 3, iy + 4), fill=on)
-            draw.line((ix + 1, iy + 1, ix, iy + 4), fill=on)
-        elif code in [71, 73, 75, 85, 86]:
-            draw.text((ix - 3, iy - 6), "*", font=self.FONT_BATT, fill=on)
-        elif code in [95, 96, 99]:
-            draw.polygon([(ix, iy - 5), (ix - 2, iy), (ix + 1, iy - 1), (ix - 1, iy + 4)], fill=on)
+        if mute_tuple is not None:
+            self._draw_mute_icons_top(image, mute_tuple)
         else:
-            draw.ellipse((ix - 2, iy - 2, ix + 2, iy + 2), outline=on)
+            if code == 0:
+                draw.ellipse((ix - 3, iy - 3, ix + 3, iy + 3), outline=on)
+            elif code in [1, 2, 3]:
+                draw.ellipse((ix - 5, iy - 1, ix - 1, iy + 3), outline=on)
+                draw.ellipse((ix - 2, iy - 4, ix + 4, iy + 2), outline=on)
+            elif code in [61, 63, 65, 80, 81, 82]:
+                draw.ellipse((ix - 5, iy - 5, ix + 5, iy - 1), outline=on)
+                draw.line((ix - 2, iy + 1, ix - 3, iy + 4), fill=on)
+                draw.line((ix + 1, iy + 1, ix, iy + 4), fill=on)
+            elif code in [71, 73, 75, 85, 86]:
+                draw.text((ix - 3, iy - 6), "*", font=self.FONT_BATT, fill=on)
+            elif code in [95, 96, 99]:
+                draw.polygon([(ix, iy - 5), (ix - 2, iy), (ix + 1, iy - 1), (ix - 1, iy + 4)], fill=on)
+            else:
+                draw.ellipse((ix - 2, iy - 2, ix + 2, iy + 2), outline=on)
 
         if aqi is not None:
             aqi_str = f"AQI:{aqi}" if aqi >= 100 else f"AQI: {aqi}"
@@ -210,6 +258,7 @@ class Timer:
 
     def get_image(self):
         battery = self._battery()
+        mute_tuple = self._mute_status()
         weather_tuple = self._weather()
         now = localtime()
         t_text, d_text = self.get_current_time()
@@ -217,9 +266,9 @@ class Timer:
         if self.style == self.Style.ANALOG:
             key = (self.style, now.tm_hour, now.tm_min,
                    now.tm_sec if self.display_seconds else -1,
-                   self.language, battery, self.show_battery_percent, weather_tuple)
+                   self.language, battery, self.show_battery_percent, weather_tuple, mute_tuple)
         else:
-            key = (self.style, t_text, d_text, battery, self.show_battery_percent, weather_tuple)
+            key = (self.style, t_text, d_text, battery, self.show_battery_percent, weather_tuple, mute_tuple)
 
         if key == self._cache_key and self._cached_image is not None:
             return self._cached_image
@@ -232,9 +281,10 @@ class Timer:
         draw = ImageDraw.Draw(image)
 
         # Compute horizontal safe bounds based on which side widgets are active:
-        # - Weather occupies x = 0..31 on the left when active
+        # - Weather or Mute/Deafen icons occupy x = 0..31 on the left when active
         # - Battery occupies x = 110..127 on the right when active
-        x_left = 32 if weather_tuple is not None else 2
+        left_active = (mute_tuple is not None) or (weather_tuple is not None)
+        x_left = 32 if left_active else 2
         x_right = 109 if battery is not None else (self.config.width - 2)
         avail_w = max(40, x_right - x_left)
         cx = (x_left + x_right) / 2.0
@@ -243,7 +293,7 @@ class Timer:
         # === ANALOG STYLE ===
         if self.style == self.Style.ANALOG:
             current_time = localtime()
-            radius = 17 if (weather_tuple is not None and battery is not None) else 18
+            radius = 17 if (left_active and battery is not None) else 18
             day_label = d_text.split(" ")[0]
             day_w = self.FONT_DIGI_SMALL.getlength(day_label)
             gap = 6
@@ -284,7 +334,7 @@ class Timer:
 
         elif self.style == self.Style.BIG:
             # === BIG STYLE: HUGE TIME, NO DATE (auto-fitted to available width) ===
-            big_font = self._fit_fixed_width_font(time_text=t_text, max_size=30, min_size=14, max_width=avail_w - 2) if False else self._fit_fixed_width_font(t_text, 30, 14, avail_w - 2)
+            big_font = self._fit_fixed_width_font(t_text, 30, 14, avail_w - 2)
             self._draw_fixed_width_text(
                 draw, cx, cy,
                 t_text,
@@ -332,7 +382,9 @@ class Timer:
             )
 
         if weather_tuple is not None:
-            self._draw_weather(draw, weather_tuple)
+            self._draw_weather(image, draw, weather_tuple, mute_tuple)
+        elif mute_tuple is not None:
+            self._draw_mute_icons_top(image, mute_tuple)
 
         if battery is not None:
             self._draw_battery(draw, battery)

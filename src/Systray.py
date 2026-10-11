@@ -519,11 +519,9 @@ def run_systray_async(display_manager):
         Menu.SEPARATOR,
         Item(
             "⚙️ Settings...",
-            lambda icon, item: __import__("threading").Thread(
-                target=__import__("src.SettingsWindow", fromlist=["open_settings"]).open_settings,
-                args=(display_manager.user_preferences, display_manager.update_preferences),
-                daemon=True
-            ).start()
+            lambda icon, item: __import__("src.SettingsWindow", fromlist=["open_settings"]).open_settings(
+                display_manager.user_preferences, display_manager.update_preferences, display_manager
+            )
         ),
         Item(
             get_update_label,

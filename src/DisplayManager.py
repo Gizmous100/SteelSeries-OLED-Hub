@@ -134,12 +134,16 @@ class DisplayManager:
         self._set_headset_hid_sync_enabled(
             bool(self.user_preferences.get_preference("headset_hid_sync_enabled"))
         )
-        # Headset battery, shown top-left on the clock (opt-in; needs HID sync)
+        # Headset battery, shown top-right on the clock (opt-in; needs HID sync)
         self.timer.battery_getter = lambda: (
             self._hid_listener.current_battery() if self._hid_listener else None
         )
         self.timer.weather_getter = lambda: (
             self.weather.get_weather_data() if hasattr(self, "weather") else None
+        )
+        self.timer.mute_status_getter = self._get_clock_mute_status
+        self.timer.show_clock_mute_icons = bool(
+            self.user_preferences.get_preference("show_clock_mute_icons")
         )
         Thread(target=self._discord_rpc_loop, daemon=True, name="Discord-RPC").start()
 
@@ -749,6 +753,8 @@ class DisplayManager:
             self.user_preferences.get_preference("show_headset_battery"))
         self.timer.show_battery_percent = bool(
             self.user_preferences.get_preference("show_battery_percent"))
+        self.timer.show_clock_mute_icons = bool(
+            self.user_preferences.get_preference("show_clock_mute_icons"))
 
         if hasattr(self, "hardware_monitor"):
             self.hardware_monitor.update_preferences(self.user_preferences)
@@ -756,7 +762,16 @@ class DisplayManager:
         if hasattr(self, "weather"):
             self.weather.update_preferences(self.user_preferences)
 
-        self._last_lighting_state = None
+        try:
+            import os
+            if os.path.exists(self._config_file_path):
+                self._last_config_mtime = os.path.getmtime(self._config_file_path)
+        except Exception:
+            pass
+
+        if not self.user_preferences.get_preference("afk_enabled") and self._is_afk:
+            self._is_afk = False
+            self._last_lighting_state = None
 
         # Hotkeys — convert preference strings to VK codes for the raw hook
         self._reload_hotkey_vks()
@@ -1015,25 +1030,38 @@ class DisplayManager:
 
             # --- AFK Logic ---
             if self.user_preferences.get_preference("afk_enabled"):
-                raw_idle_ms = get_idle_time_ms()
-                
-                # Check if input occurred (raw idle time dropped)
-                if raw_idle_ms < self._last_raw_idle_ms - 1000:
-                    # Ignore inputs that happen within 3 seconds of toggling AFK (phantom inputs from SteelSeries API)
-                    if (now_ms - self._afk_toggled_time) < 3000:
-                        logger.debug("Ignoring phantom input triggered by AFK state change")
-                    else:
-                        self._effective_idle_start = now_ms - raw_idle_ms
-                
-                self._last_raw_idle_ms = raw_idle_ms
-                idle_ms = now_ms - self._effective_idle_start
-                
-                new_afk_state = (idle_ms > self._afk_timeout_ms)
-                if new_afk_state != self._is_afk:
-                    self._is_afk = new_afk_state
-                    self._afk_toggled_time = now_ms
-                    logger.info(f"AFK State changed to: {self._is_afk} (idle: {idle_ms}ms)")
-                    self._sync_lighting_state()
+                game_blocks_afk = (
+                    bool(self.user_preferences.get_preference("afk_disable_in_games"))
+                    and self.hardware_monitor.is_fullscreen_game_active()
+                )
+                if game_blocks_afk:
+                    self._effective_idle_start = now_ms
+                    self._last_raw_idle_ms = 0
+                    if self._is_afk:
+                        self._is_afk = False
+                        self._afk_toggled_time = now_ms
+                        logger.info("AFK State changed to: False (suppressed by active game)")
+                        self._sync_lighting_state()
+                else:
+                    raw_idle_ms = get_idle_time_ms()
+                    
+                    # Check if input occurred (raw idle time dropped)
+                    if raw_idle_ms < self._last_raw_idle_ms - 1000:
+                        # Ignore inputs that happen within 3 seconds of toggling AFK (phantom inputs from SteelSeries API)
+                        if (now_ms - self._afk_toggled_time) < 3000:
+                            logger.debug("Ignoring phantom input triggered by AFK state change")
+                        else:
+                            self._effective_idle_start = now_ms - raw_idle_ms
+                    
+                    self._last_raw_idle_ms = raw_idle_ms
+                    idle_ms = now_ms - self._effective_idle_start
+                    
+                    new_afk_state = (idle_ms > self._afk_timeout_ms)
+                    if new_afk_state != self._is_afk:
+                        self._is_afk = new_afk_state
+                        self._afk_toggled_time = now_ms
+                        logger.info(f"AFK State changed to: {self._is_afk} (idle: {idle_ms}ms)")
+                        self._sync_lighting_state()
             else:
                 if self._is_afk:
                     self._is_afk = False
@@ -1050,13 +1078,13 @@ class DisplayManager:
             elif self._calculator_active:
                 img = self.calculator.get_image()
                 frame_data = convert_to_bitmap(img)
-            # Hardware monitor overlay > volume overlay > everything
-            elif self.display_hw_monitor or self.hardware_monitor.should_display() or self.hardware_monitor.is_game_running():
-                img = self.hardware_monitor.get_image()
-                frame_data = convert_to_bitmap(img)
-            # volume overlay > everything else
+            # Volume & mic mute overlay > hardware monitor > everything else
             elif self.volume_overlay.should_display():
                 img = self.volume_overlay.get_image()
+                frame_data = convert_to_bitmap(img)
+            # Hardware monitor overlay
+            elif self.display_hw_monitor or self.hardware_monitor.should_display() or self.hardware_monitor.is_game_running():
+                img = self.hardware_monitor.get_image()
                 frame_data = convert_to_bitmap(img)
             # Weather hotkey overlay
             elif hasattr(self, "weather") and self._weather_active_time > 0 and (time() - self._weather_active_time) < int(self.user_preferences.get_preference("weather_display_time")):
@@ -1427,6 +1455,54 @@ class DisplayManager:
             except Exception:
                 pass
 
+    def _get_clock_mute_status(self):
+        """Return (is_mic_muted, is_deafened) for the Clock left-side widget."""
+        if not hasattr(self, "volume_overlay") or self.volume_overlay is None:
+            return (False, False)
+        vo = self.volume_overlay
+        if vo._discord_connected:
+            deaf = bool(vo._discord_deafened)
+            if vo._mic_override is not None:
+                mute = bool(vo._mic_override)
+            elif vo._discord_muted is not None:
+                mute = bool(vo._discord_muted) or deaf
+            else:
+                mute = bool(vo._last_mic_mute) or deaf
+        else:
+            deaf = bool(vo._last_mute)
+            mute = bool(vo._last_mic_mute)
+        return (mute, deaf)
+
+    def trigger_mock_discord_state(self, toggle_mute=False, toggle_deaf=False):
+        """Toggle or preview mocked Discord voice state (mute / deafen) on the OLED."""
+        cur_mute = (
+            bool(self.volume_overlay._discord_muted)
+            if self.volume_overlay._discord_muted is not None
+            else bool(self.volume_overlay._last_mic_mute)
+        )
+        cur_deaf = bool(self.volume_overlay._discord_deafened)
+        if toggle_mute:
+            cur_mute = not cur_mute
+        if toggle_deaf:
+            cur_deaf = not cur_deaf
+        effective_mute = bool(cur_mute or cur_deaf)
+        now = time()
+        self._last_discord_state = effective_mute
+        self._last_hw_state = effective_mute
+        self._sync_lockout_until = now + 1.2
+        if self._is_afk:
+            self._is_afk = False
+            self._afk_toggled_time = int(now * 1000)
+            self._effective_idle_start = int(now * 1000)
+            self._sync_lighting_state()
+        self.volume_overlay.trigger_mock_discord(muted=cur_mute, deafened=cur_deaf)
+        if self._hid_listener:
+            try:
+                self._hid_listener.set_hardware_mute(effective_mute)
+            except Exception as e:
+                logger.debug("Mock Discord headset sync failed: %s", e)
+        return cur_mute, cur_deaf
+
     def _hotkey_set_discord_mute(self, muted):
         """Apply a mute-hotkey press as ONE transaction against Discord.
 
@@ -1440,7 +1516,9 @@ class DisplayManager:
         Returns True if the command was sent (caller falls back to the system
         mic path when False).
         """
-        if not self._discord_ipc.set_mute(muted):
+        sent_ipc = self._discord_ipc.set_mute(muted)
+        mock_enabled = bool(self.user_preferences.get_preference("discord_mock_enabled"))
+        if not sent_ipc and not mock_enabled:
             return False
 
         now = time()
@@ -1453,6 +1531,9 @@ class DisplayManager:
         # A fresh press supersedes any previous override; it is re-armed below
         # only if Discord refuses this new request.
         self.volume_overlay._mic_override = None
+        if not sent_ipc and mock_enabled:
+            self.volume_overlay._discord_connected = True
+            self.volume_overlay._discord_muted = muted
 
         # The RPC loop's sync path is suppressed for this change, so perform the
         # work it would have done: gate the real Windows capture devices...
@@ -1485,6 +1566,47 @@ class DisplayManager:
 
         while self._running:
             try:
+                mock_enabled = bool(self.user_preferences.get_preference("discord_mock_enabled"))
+                has_client_id = bool(self._discord_ipc.client_id)
+
+                # When Discord Application ID is not configured, run in Mock Discord Mode
+                # (if enabled) so hardware headset mute, mute hotkeys, and OLED icons work
+                # locally without spamming IPC connection attempts.
+                if not has_client_id:
+                    if mock_enabled:
+                        self.volume_overlay._discord_connected = True
+                        if self.volume_overlay._discord_muted is None:
+                            self.volume_overlay._discord_muted = bool(self.volume_overlay._last_mic_mute)
+                        if self.volume_overlay._discord_deafened is None:
+                            self.volume_overlay._discord_deafened = False
+
+                        new_hw_mute = self._hid_listener._last_state if self._hid_listener else None
+                        new_hw_event_ts = self._hid_listener._last_hw_ts if self._hid_listener else 0.0
+                        now = time()
+                        if (
+                            new_hw_mute is not None
+                            and new_hw_event_ts > self._last_hw_event_ts
+                            and new_hw_mute != self._last_hw_state
+                            and now > self._sync_lockout_until
+                        ):
+                            logger.info(f"[MOCK-DISCORD] Hardware button pressed: {self._last_hw_state} -> {new_hw_mute}")
+                            self._last_hotkey_req = None
+                            self.volume_overlay._mic_override = None
+                            self._last_hw_state = new_hw_mute
+                            self._last_discord_state = new_hw_mute
+                            self._last_hw_event_ts = new_hw_event_ts
+                            self._sync_lockout_until = now + 1.0
+                            self.volume_overlay.set_discord_mute(
+                                new_hw_mute,
+                                bool(self.volume_overlay._discord_deafened),
+                                True,
+                            )
+                        sleep(0.25)
+                    else:
+                        self.volume_overlay.set_discord_mute(None, None, False)
+                        sleep(5.0)
+                    continue
+
                 # Try to connect if not already connected
                 if not self._discord_ipc.is_connected:
                     if self._discord_ipc.connect():
@@ -1518,13 +1640,14 @@ class DisplayManager:
                             self._sync_lockout_until = now + 2.0
                             logger.info(f"Discord IPC: Initial state established (Muted={initial_mute}) - Sync Lockout for 2s")
                     else:
-                        # Discord not running — hold state for 10s before clearing
-                        if self._discord_disconnect_ts == 0.0:
-                            self._discord_disconnect_ts = time()
-                        
-                        # If truly gone for 10s, clear display state
-                        if (time() - self._discord_disconnect_ts) > 10.0:
-                             self.volume_overlay.set_discord_mute(None, None, False)
+                        # Discord not running — hold state for 10s before clearing (unless mock mode is enabled)
+                        if mock_enabled:
+                            self.volume_overlay._discord_connected = True
+                        else:
+                            if self._discord_disconnect_ts == 0.0:
+                                self._discord_disconnect_ts = time()
+                            if (time() - self._discord_disconnect_ts) > 10.0:
+                                self.volume_overlay.set_discord_mute(None, None, False)
                         
                         sleep(10)
                         continue
@@ -1535,11 +1658,13 @@ class DisplayManager:
                 # Pipe open but OAuth incomplete: get_voice_settings only
                 # returns a {mute: False} placeholder, which would clobber real
                 # state and make the OLED lie (icon unmuted while the system
-                # mic is muted via the hotkey fallback). Treat as disconnected:
-                # system mic drives display + hotkey, while auth keeps retrying
-                # inside get_voice_settings on every poll.
+                # mic is muted via the hotkey fallback). Treat as disconnected
+                # (unless mock mode is enabled):
                 if voice is not None and not self._discord_ipc._authenticated:
-                    self.volume_overlay.set_discord_mute(None, None, False)
+                    if mock_enabled:
+                        self.volume_overlay._discord_connected = True
+                    else:
+                        self.volume_overlay.set_discord_mute(None, None, False)
                     sleep(1.0)
                     continue
 

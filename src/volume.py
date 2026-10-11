@@ -459,6 +459,28 @@ class VolumeOverlay:
             if time() - self.app_start_time > 4.0:
                 self._last_change = time()
 
+    def trigger_mock_discord(self, muted=None, deafened=None):
+        """Simulate a Discord mute/deafen state change and display the OLED overlay."""
+        self._discord_connected = True
+        self._discord_running = True
+        if muted is not None:
+            self._discord_muted = bool(muted)
+        elif self._discord_muted is None:
+            self._discord_muted = bool(self._last_mic_mute)
+        if deafened is not None:
+            self._discord_deafened = bool(deafened)
+        elif self._discord_deafened is None:
+            self._discord_deafened = False
+        effective_mute = bool(self._discord_muted or self._discord_deafened)
+        self._last_mic_mute = effective_mute
+        self._sync_all_capture_mics(effective_mute, source="MockDiscord")
+        self._last_change = time()
+        logger.info(
+            "Mock Discord state triggered: muted=%s, deafened=%s",
+            self._discord_muted,
+            self._discord_deafened,
+        )
+
     def should_display(self) -> bool:
         if self._last_change == 0.0:
             return False
@@ -469,9 +491,11 @@ class VolumeOverlay:
         image = Image.new("1", (w, h), color=self.config.secondary)
         draw = ImageDraw.Draw(image)
 
+        is_deafened = bool(self._discord_connected and self._discord_deafened)
+
         # 1. Speaker Icon
         icon_key = "speaker_mute"
-        if not self._last_mute:
+        if not self._last_mute and not is_deafened:
             if self._last_vol == 0: icon_key = "speaker_mute"
             elif self._last_vol < 33: icon_key = "speaker_low"
             elif self._last_vol < 66: icon_key = "speaker_mid"
@@ -499,7 +523,7 @@ class VolumeOverlay:
                 image.paste(self.icons[mic_key], (w - 14, 14))
 
         bar_x1 = 18
-        if self._last_mic_mute is not None:
+        if mic_mute_state is not None:
              bar_x2 = w - 18
         else:
              bar_x2 = w - 4 
@@ -509,7 +533,7 @@ class VolumeOverlay:
         
         draw.rectangle((bar_x1, bar_y1, bar_x2, bar_y2), outline=self.config.primary)
         
-        if not self._last_mute and self._last_vol and self._last_vol > 0:
+        if not self._last_mute and not is_deafened and self._last_vol and self._last_vol > 0:
             fill_width = int((bar_x2 - bar_x1 - 2) * (self._last_vol / 100))
             if fill_width > 0:
                 draw.rectangle(

@@ -387,6 +387,12 @@ class HIDListener(threading.Thread):
             logger.warning("HID Sync: Could not find Cloud III device in registry")
             return False
 
+        # SteelSeries headsets (VID_1038, e.g. Arctis Nova 7) use a mechanical latching
+        # mute button on the earcup and do not accept HyperX Cloud III HID mute output reports.
+        if "VID_1038" in self.device_path.upper():
+            logger.debug("HID Sync: Skipping hardware mute write on SteelSeries headset (mechanical mute switch)")
+            return False
+
         logger.debug("HID Sync: Opening write handle to %s", self.device_path)
 
         # Temporarily park the read handle so firmware sees a clean writer.

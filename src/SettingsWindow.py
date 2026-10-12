@@ -502,6 +502,20 @@ class SettingsGUI:
         self._toggle_row(p_afk, "Enable OLED, Keyboard & Mouse Dimming on Idle", self.vars["afk_enabled"])
         self._toggle_row(p_afk, "Disable Idle / AFK Mode During Games", self.vars["afk_disable_in_games"])
         self._entry_row(p_afk, "Idle Timeout (minutes)", self.vars["afk_timeout_minutes"], width=10)
+        afk_btn_row = tk.Frame(p_afk, bg=Colors.CONTENT)
+        afk_btn_row.pack(fill="x", pady=(8, 0))
+        tk.Button(
+            afk_btn_row,
+            text="🌙 Test AFK Mode Now (1.5s delay)",
+            bg=Colors.CARD_BG,
+            fg=Colors.TEXT_MAIN,
+            font=FONT_BODY,
+            relief="flat",
+            cursor="hand2",
+            padx=12,
+            pady=4,
+            command=self._test_afk_mode,
+        ).pack(side="left", padx=(5, 0))
         tk.Label(
             p_afk,
             text=(
@@ -711,6 +725,15 @@ class SettingsGUI:
                         root.after(0, lambda: status_var.set(self._format_mock_status(muted, deaf)) if self.mock_status_var is not None else None)
                 except Exception as e:
                     logger.error(f"Mock Discord deafen test failed: {e}")
+            threading.Thread(target=_worker, daemon=True).start()
+
+    def _test_afk_mode(self):
+        if self.manager and hasattr(self.manager, "trigger_afk_test"):
+            def _worker():
+                try:
+                    self.manager.trigger_afk_test()
+                except Exception as e:
+                    logger.error(f"AFK test failed: {e}")
             threading.Thread(target=_worker, daemon=True).start()
 
     def _get_discord_redirect_uri(self) -> str:
@@ -967,9 +990,16 @@ class SettingsGUI:
                     val = self.DROPDOWN_MAPS[k].get(val, val)
 
                 # Integer fields
-                if k in ["scrollbar_padding", "text_padding_left", "local_port", "discord_local_port", "spotify_fetch_delay", "hw_polling_interval", "weather_display_time", "afk_timeout_minutes"]:
+                if k in ["scrollbar_padding", "text_padding_left", "local_port", "discord_local_port", "spotify_fetch_delay", "hw_polling_interval", "weather_display_time"]:
                     try: val = int(val)
                     except: val = UserPreferences.DEFAULT.get(k, 0)
+
+                if k == "afk_timeout_minutes":
+                    try:
+                        fval = max(float(str(val).replace(",", ".")), 0.1)
+                        val = int(fval) if fval.is_integer() else round(fval, 2)
+                    except Exception:
+                        val = UserPreferences.DEFAULT.get(k, 5)
                 
                 # Special mapping for date format checkbox
                 if k == "date_format":

@@ -194,7 +194,9 @@ class DisplayManager:
         self._afk_timeout_ms = 5 * 60 * 1000  # 5 minutes by default
         self._afk_toggled_time = 0
         self._afk_settled = False
+        self._afk_settled_time = 0
         self._afk_baseline_input_tick = 0
+        self._last_hook_input_ms = 0
 
         # Spotify worker thread (single persistent thread instead of spawning new ones)
         self._spotify_queue = Queue(maxsize=1)
@@ -480,6 +482,10 @@ class DisplayManager:
                         vk = ctypes.c_uint32.from_address(addr).value
                         flags = ctypes.c_uint32.from_address(addr + 8).value
 
+                        # Track non-injected physical keyboard events (LLKHF_INJECTED = 0x10)
+                        if (flags & 0x10) == 0:
+                            self._last_hook_input_ms = int(time() * 1000)
+
                         is_down = wParam in (WM_KEYDOWN, WM_SYSKEYDOWN)
                         is_up = wParam in (WM_KEYUP, WM_SYSKEYUP)
 
@@ -583,9 +589,14 @@ class DisplayManager:
             def _mouse_hook_callback(nCode, wParam, lParam):
                 try:
                     if nCode == HC_ACTION:
+                        addr = lParam & 0xFFFFFFFFFFFFFFFF
+                        m_flags = ctypes.c_uint32.from_address(addr + 12).value
+                        # Track non-injected physical mouse events (LLMHF_INJECTED = 0x01)
+                        if (m_flags & 0x01) == 0:
+                            self._last_hook_input_ms = int(time() * 1000)
+
                         if wParam == WM_XBUTTONDOWN:
                             # Read XBUTTON data from memory at lParam + 8
-                            addr = lParam & 0xFFFFFFFFFFFFFFFF
                             mouse_data = ctypes.c_uint32.from_address(addr + 8).value
                             xbutton = (mouse_data >> 16) & 0xFFFF
                             
@@ -723,7 +734,11 @@ class DisplayManager:
         self.timer_threshold = (
             max(int(self.user_preferences.get_preference("timer_threshold")), 0) * 1000
         )
-        self._afk_timeout_ms = max(int(self.user_preferences.get_preference("afk_timeout_minutes") or 5), 1) * 60 * 1000
+        try:
+            afk_mins = float(self.user_preferences.get_preference("afk_timeout_minutes") or 5)
+        except Exception:
+            afk_mins = 5.0
+        self._afk_timeout_ms = max(int(afk_mins * 60 * 1000), 5000)
 
         self.display_clock = self.user_preferences.get_preference("display_timer")
         self.display_player = self.user_preferences.get_preference("display_player")
@@ -772,6 +787,7 @@ class DisplayManager:
         if not self.user_preferences.get_preference("afk_enabled") and self._is_afk:
             self._is_afk = False
             self._last_lighting_state = None
+            self._last_sent_frame = None
 
         # Hotkeys — convert preference strings to VK codes for the raw hook
         self._reload_hotkey_vks()
@@ -799,6 +815,26 @@ class DisplayManager:
             # If not ready (missing tokens) but config didn't change, we do NOTHING directly here.
             # The user must fix the config in the settings window to trigger the 'changed' path.
             # OR we could silently try to fetch if prompt_user=False? No, let's keep it clean.
+
+    def trigger_afk_test(self):
+        """Enter AFK mode after a short 1.5s delay so the user can test OLED + RGB blackout."""
+        sleep(1.5)
+        now_ms = int(time() * 1000)
+        last_input_tick, _ = get_last_input_info()
+        self._is_afk = True
+        self._afk_toggled_time = now_ms
+        self._afk_settled = False
+        self._afk_settled_time = now_ms + 1500
+        self._afk_baseline_input_tick = last_input_tick
+        self._last_sent_frame = None
+        logger.info("AFK State changed to: True (triggered via Settings Test AFK button)")
+        self._sync_lighting_state()
+        try:
+            if self.steelseries_api.send_frame([0] * 640):
+                self._last_sent_frame = [0] * 640
+                self._last_frame_sent_time = time()
+        except Exception as e:
+            logger.debug("Initial AFK test blank frame failed: %s", e)
 
     def _sync_lighting_state(self):
         """
@@ -1039,6 +1075,7 @@ class DisplayManager:
                         self._is_afk = False
                         self._afk_toggled_time = now_ms
                         self._afk_settled = False
+                        self._last_sent_frame = None
                         logger.info("AFK State changed to: False (suppressed by active game)")
                         self._sync_lighting_state()
                 else:
@@ -1050,22 +1087,36 @@ class DisplayManager:
                             self._is_afk = True
                             self._afk_toggled_time = now_ms
                             self._afk_settled = False
+                            self._afk_settled_time = now_ms + 1500
                             self._afk_baseline_input_tick = last_input_tick
+                            self._last_sent_frame = None
                             logger.info(f"AFK State changed to: True (idle: {idle_ms}ms >= {self._afk_timeout_ms}ms)")
                             self._sync_lighting_state()
+                            try:
+                                if self.steelseries_api.send_frame([0] * 640):
+                                    self._last_sent_frame = [0] * 640
+                                    self._last_frame_sent_time = time()
+                            except Exception:
+                                pass
                     else:
                         # User is currently in AFK:
                         if not self._afk_settled:
                             # Allow 1.5s for hardware/driver transitions upon entering AFK to settle
                             if (now_ms - self._afk_toggled_time) >= 1500:
                                 self._afk_settled = True
+                                self._afk_settled_time = now_ms
                                 self._afk_baseline_input_tick = last_input_tick
                         else:
-                            # Once settled, ANY fresh mouse movement, click, or keypress updates last_input_tick
-                            if last_input_tick != self._afk_baseline_input_tick or idle_ms < 1000:
+                            # Once settled, ANY fresh mouse movement, click, or keypress updates last_input_tick or _last_hook_input_ms
+                            if (
+                                last_input_tick != self._afk_baseline_input_tick
+                                or idle_ms < 1000
+                                or self._last_hook_input_ms > self._afk_settled_time
+                            ):
                                 self._is_afk = False
                                 self._afk_toggled_time = now_ms
                                 self._afk_settled = False
+                                self._last_sent_frame = None
                                 logger.info("AFK State changed to: False (woken by user input)")
                                 self._sync_lighting_state()
             else:
@@ -1073,13 +1124,14 @@ class DisplayManager:
                     self._is_afk = False
                     self._afk_toggled_time = now_ms
                     self._afk_settled = False
+                    self._last_sent_frame = None
                     logger.info("AFK State changed to: False (afk_enabled disabled)")
                     self._sync_lighting_state()
 
             frame_data = None
 
             if self._is_afk:
-                # AFK: Blank screen
+                # AFK: Blank screen (all 640 bytes = 0x00)
                 frame_data = [0] * 640
             # Calculator overlay takes priority over everything when active
             elif self._calculator_active:
@@ -1118,17 +1170,19 @@ class DisplayManager:
                     if self.player.pause_started and (int(time() * 1000) - self.player.pause_started) > self.timer_threshold:
                         self.state = State.SHOW_CLOCK
 
-            # Send if image changed OR every 1 second anyway (to "claim" OLED back from games)
+            # Send if image changed OR periodically (every 1s when active, every 2s when AFK so the
+            # blank [0]*640 frame stays active and prevents GameSense's 60s deinitializer-proc from
+            # resetting the OLED back to the default background image).
             now_sec = time()
             if frame_data is not None:
-                # If AFK, only send the frame ONCE (when it changes). Spamming frames wakes up the OLED and causes flickering.
-                force_resend = (not self._is_afk) and (now_sec - self._last_frame_sent_time > 1.0)
+                resend_interval = 2.0 if self._is_afk else 1.0
+                force_resend = (now_sec - self._last_frame_sent_time > resend_interval)
                 if (frame_data != self._last_sent_frame) or force_resend:
                     try:
-                        self.steelseries_api.send_frame(frame_data)
-                        self._last_sent_frame = frame_data
-                        self._last_frame_sent_time = now_sec
-                        self._frame_fail_start = 0  # Reset failure timer on success
+                        if self.steelseries_api.send_frame(frame_data):
+                            self._last_sent_frame = frame_data
+                            self._last_frame_sent_time = now_sec
+                            self._frame_fail_start = 0  # Reset failure timer on success
                     except Exception as e:
                         logger.debug("Frame send failed: %s", e)
                         # Track prolonged failure — if frames fail for 30s+, force re-register
@@ -1142,8 +1196,8 @@ class DisplayManager:
                             except Exception as re:
                                 logger.error("Re-registration failed: %s", re)
 
-            # Heartbeat: keep the game registered (every 30s)
-            if now_sec - self._last_heartbeat_time > 30.0:
+            # Heartbeat: keep the game(s) registered (every 25s)
+            if now_sec - self._last_heartbeat_time > 25.0:
                 self._last_heartbeat_time = now_sec
                 try:
                     self.steelseries_api.heartbeat()
@@ -1343,11 +1397,22 @@ class DisplayManager:
 
     def shutdown(self):
         """Gracefully stop all background threads and clean up resources."""
+        if getattr(self, "_shutdown_done", False):
+            return
+        self._shutdown_done = True
         logger.info("Shutting down DisplayManager...")
         self._running = False
         
         # Fast unhook immediately to prevent mouse freeze
         self.fast_unhook()
+
+        # Stop and remove GameSense games and redeploy native SteelSeries GG configs
+        # so the 60s deinitialize timer never resets Rival 5 to orange after exit.
+        if hasattr(self, "steelseries_api") and self.steelseries_api:
+            try:
+                self.steelseries_api.remove_game()
+            except Exception:
+                pass
 
         # Post a WM_QUIT anyway just to be polite and try to free the thread.
         # It's okay if this deadlocks internally because we already dropped the hooks.

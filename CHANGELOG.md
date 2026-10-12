@@ -4,7 +4,25 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 **Project Versioning Policy:**
 - **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.55`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.56`).
+
+---
+
+## [`v1.56`] — 2026-10-12 — Isolated AFK RGB GameSense Architecture (Rival 5 Orange Fix), Persistent AFK OLED Blank & One-Click AFK Test
+### ✨ Bug Fixes & Improvements (`+0.01`)
+- **Isolated Two-Game GameSense Architecture — Permanent Rival 5 Factory Orange (`#FC4E02`) Fix (`src/SteelSeriesAPI.py`):**
+  - Root-caused a SteelSeries Engine Lisp VM bug in `user-config.lsp` (`clear-event-zones-at-level`): while `/remove_game_event` clears per-key keyboard zones (`clear-event-per-key-zones-at-level`), SteelSeries Engine has no `clear-event-composite-zones-at-level` function. Once `LIGHTING` was ever bound on `STEELSERIES_OLED_HUB`, Rival 5's `rgb-10-zone` composite zones remained permanently cached in `STEELSERIES_OLED_HUB`'s sandbox (`get-composite-zones-in-use`), so the very next OLED `UPDATE` frame after `/stop_game` triggered `generic-initializer.lsp` (`initialize:`) to reclaim Rival 5's RGB zones and overwrite its steady blue profile with GameSense factory orange (`#FC4E02`).
+  - Separated OLED display updates (`STEELSERIES_OLED_HUB` -> `UPDATE`) and AFK RGB blackout (`STEELSERIES_AFK_RGB` -> `LIGHTING`) into two completely independent GameSense games.
+  - On startup (`register_game`), `STEELSERIES_OLED_HUB` is purged via `/remove_game` and registered strictly with the `screened-128x40` `UPDATE` handler, then primed with one frame and followed by `_redeploy_engine_active_configs()`.
+  - When entering AFK (`set_lighting(False)`), `STEELSERIES_AFK_RGB` is dynamically registered and bound to black out keyboard and mouse RGB (`[0, 0, 0]`), and kept alive via `/game_heartbeat`.
+  - When waking from AFK (`release_lighting_to_gg()`) or exiting the application (`remove_game()`), `STEELSERIES_AFK_RGB` is completely destroyed via `/remove_game_event` + `/stop_game` + `/remove_game`, followed by a `0.12s` settle delay and `POST /configuration/<id>/forceDeploy` on both keyboard and mouse.
+- **Persistent OLED Blackout During AFK Mode & Immediate Blank Frame Verification (`src/DisplayManager.py`, `src/Systray.py`):**
+  - Fixed a bug where `_last_sent_frame = [0] * 640` was set unconditionally even if `send_frame()` returned `False` (leaving the clock frozen on the OLED screen during AFK), and where `screener.lsp` (`deinitialize:` -> `update-screen-to-background:`) woke the OLED display back up after 60 seconds of AFK when no `UPDATE` events were sent.
+  - Added immediate `[0] * 640` frame dispatch upon entering AFK, checked `send_frame()` return status before caching `_last_sent_frame`, and kept resending `[0] * 640` every `2.0s` during AFK so the OLED screen stays completely off for the entire duration of AFK mode.
+  - Added clean `steelseries_api.remove_game()` execution inside `DisplayManager.shutdown()` so closing the app never triggers a delayed 60-second GameSense `deinitializer-proc` reset on the mouse.
+- **One-Click AFK Test Button & Low-Level Hook Wake Fallback (`src/SettingsWindow.py`, `src/DisplayManager.py`):**
+  - Added a **`🌙 Test AFK Mode Now (1.5s delay)`** button in **Settings → 💤 AFK Mode** (`trigger_afk_test()`) and support for decimal `Idle Timeout (minutes)` values (e.g., `0.2` min) so users can test OLED and RGB AFK blackout with a single click.
+  - Supplemented `GetLastInputInfo` wake detection with direct physical mouse (`WH_MOUSE_LL`, `LLMHF_INJECTED == 0`) and keyboard (`WH_KEYBOARD_LL`, `LLKHF_INJECTED == 0`) hook timestamps (`_last_hook_input_ms`).
 
 ---
 
@@ -28,6 +46,8 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
   - Added a `ToggleSwitch` variable trace (`trace_add("write", ...)`) and live callback so toggling the switch updates both Settings tabs and the keyboard OLED screen immediately in real time.
 - **SteelSeries Arctis Nova 7 Mechanical Mute Switch Guard (`src/HIDListener.py`):**
   - Skipped sending HyperX Cloud III HID mute output reports (`_do_hardware_mute`) when connected to SteelSeries headsets (`VID_1038`), as the **Arctis Nova 7** uses a purely mechanical latching earcup mute switch that does not emit or accept USB HID mute packets.
+
+![Show / Hide Mute & Deafen Icons on Clock (Replaces Weather Cloud)](content/demos/demo_clock_mute_icons.png)
 
 ---
 

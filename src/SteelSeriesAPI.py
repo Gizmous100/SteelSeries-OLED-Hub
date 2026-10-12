@@ -7,6 +7,8 @@ import urllib3
 
 GAME = "STEELSERIES_OLED_HUB"
 GAME_DISPLAY_NAME = "SteelSeries OLED & RGB Hub"
+AFK_GAME = "STEELSERIES_AFK_RGB"
+AFK_GAME_DISPLAY_NAME = "SteelSeries OLED Hub (AFK Blackout)"
 AUTHOR = "gizmous (orig. 0z-zy)"
 EVENT = "UPDATE"
 
@@ -48,6 +50,7 @@ class SteelSeriesAPI:
         self._lighting_active = True
         self._lighting_bound = False
         self._last_lighting_release_ts = 0.0
+        self._cleaned_main_game = False
         
         # Pre-allocate static headers to reduce object churn
         self._static_headers = {
@@ -166,9 +169,20 @@ class SteelSeriesAPI:
 
     def _bind_lighting_event(self) -> bool:
         """
-        Bind the LIGHTING event for Keyboard and Mouse RGB zones during AFK blackout:
+        Register the dedicated AFK_GAME and bind its LIGHTING event for Keyboard
+        and Mouse RGB zones during AFK blackout:
         - Value 0 = AFK blackout [0, 0, 0] across all keyboard and mouse illumination zones.
+        Keeping AFK lighting in a separate GameSense game (STEELSERIES_AFK_RGB) ensures
+        thatSTEELSERIES_OLED_HUB's Lisp sandbox never accumulates composite-zones-in-use
+        for Rival 5, and /remove_game on STEELSERIES_AFK_RGB cleanly destroys its sandbox.
         """
+        self.send_data("/game_metadata", {
+            "game": AFK_GAME,
+            "game_display_name": AFK_GAME_DISPLAY_NAME,
+            "developer": AUTHOR,
+            "deinitialize_timer_length_ms": 60000
+        }, ignore_errors=True)
+
         color_ranges = [
             {"low": 0, "high": 1, "color": {"red": 0, "green": 0, "blue": 0}}
         ]
@@ -244,7 +258,7 @@ class SteelSeriesAPI:
             })
 
         ok = self.send_data("/bind_game_event", {
-            "game": GAME,
+            "game": AFK_GAME,
             "event": "LIGHTING",
             "min_value": 0,
             "max_value": 1,
@@ -253,14 +267,15 @@ class SteelSeriesAPI:
         })
         self._lighting_bound = bool(ok)
         if ok:
-            logger.info("Bound LIGHTING event for AFK blackout (Keyboard + Mouse RGB [0, 0, 0])")
+            logger.info("Bound LIGHTING event on %s for AFK blackout (Keyboard + Mouse RGB [0, 0, 0])", AFK_GAME)
         return bool(ok)
 
     def release_lighting_to_gg(self, force: bool = False) -> bool:
         """
-        Remove the GameSense LIGHTING event binding, reset the GameSense Lisp VM
-        zones-in-use-cache via /stop_game, and redeploy active SteelSeries GG
-        Engine configurations so keyboard and mouse illumination are 100% native.
+        Stop and remove the dedicated AFK_GAME (STEELSERIES_AFK_RGB) so its Lisp VM
+        composite-zones-in-use table is completely destroyed, wait for deinitialize:
+        (0x22 internal-lighting-reset) to complete, and force-deploy active SteelSeries
+        GG Engine configurations so keyboard and mouse illumination are 100% native.
         """
         if not self.address:
             return False
@@ -270,28 +285,31 @@ class SteelSeriesAPI:
                 return True
 
         self.send_data("/remove_game_event", {
-            "game": GAME,
+            "game": AFK_GAME,
             "event": "LIGHTING"
         }, ignore_errors=True)
         self.send_data("/stop_game", {
-            "game": GAME
+            "game": AFK_GAME
+        }, ignore_errors=True)
+        self.send_data("/remove_game", {
+            "game": AFK_GAME
         }, ignore_errors=True)
         self._lighting_bound = False
         self._last_lighting_release_ts = time()
 
-        # Wait >30ms for standard-boilerplate.lsp reset: (internal-lighting-reset)
+        # Wait ~120ms for generic-initializer.lsp deinitialize: (internal-lighting-reset 0x22)
         # to finish, then redeploy active Engine configs so Rival 5 1-frame steady
         # profiles do not remain on factory orange (#FC4E02).
-        sleep(0.08)
+        sleep(0.12)
         self._redeploy_engine_active_configs()
-        logger.info("Released LIGHTING event to SteelSeries GG Engine native configs")
+        logger.info("Released AFK lighting (%s) and restored SteelSeries GG Engine native configs", AFK_GAME)
         return True
 
     def bind_game_event(self):
         # Apex 7 Pro OLED = 128x40 (640 byte)
         dummy_128x40 = [0 for _ in range(640)]
 
-        # 1. Screen handler for OLED
+        # 1. Screen handler for OLED (strictly on GAME = STEELSERIES_OLED_HUB)
         update_handlers = [
             {
                 "device-type": "screened-128x40",
@@ -309,13 +327,25 @@ class SteelSeriesAPI:
             "handlers": update_handlers
         })
 
-        # 2. Only bind LIGHTING when in AFK blackout; otherwise release LIGHTING so
-        # SteelSeries GG Engine controls keyboard and mouse colors natively.
+        # Trigger initial UPDATE event so GAME's Generic-Initializer runs initialize: now
+        # rather than after _redeploy_engine_active_configs().
+        self.send_data("/game_event", {
+            "game": GAME,
+            "event": EVENT,
+            "data": {
+                "value": 100,
+                "frame": {"image-data-128x40": dummy_128x40}
+            }
+        }, ignore_errors=True)
+
+        # 2. Only bind LIGHTING on AFK_GAME when in AFK blackout; otherwise ensure
+        # AFK_GAME is removed and native GG Engine configs are deployed.
         if not getattr(self, "_lighting_active", True):
             self._bind_lighting_event()
             self.set_lighting(False)
         else:
-            self.release_lighting_to_gg(force=True)
+            sleep(0.1)
+            self._redeploy_engine_active_configs()
 
         logger.info("Bound game event: UPDATE (OLED 128x40)")
 
@@ -339,9 +369,9 @@ class SteelSeriesAPI:
     def set_lighting(self, active: bool):
         """
         Apply AFK lighting transition:
-        - active=False (AFK mode): bind LIGHTING and send value 0 ([0, 0, 0] blackout).
-        - active=True (Wake / Normal): remove LIGHTING event so SteelSeries GG Engine
-          restores the active keyboard & mouse config colors natively.
+        - active=False (AFK mode): register/bind AFK_GAME LIGHTING and send value 0 ([0, 0, 0] blackout).
+        - active=True (Wake / Normal): stop and remove AFK_GAME and redeploy active SteelSeries GG
+          Engine configs so keyboard & mouse colors are restored natively.
         """
         self._lighting_active = bool(active)
 
@@ -350,7 +380,7 @@ class SteelSeriesAPI:
                 if not self._bind_lighting_event():
                     return False
             return self.send_data("/game_event", {
-                "game": GAME,
+                "game": AFK_GAME,
                 "event": "LIGHTING",
                 "data": {"value": 0}
             })
@@ -364,8 +394,13 @@ class SteelSeriesAPI:
         self.set_lighting(not active)
 
     def remove_game(self):
+        """Cleanly stop and remove GameSense games on exit and restore native GG Engine configs."""
         try:
-            self.send_data("/remove_game", {"game": GAME}, ignore_errors=True)
+            for g in (AFK_GAME, GAME):
+                self.send_data("/stop_game", {"game": g}, ignore_errors=True)
+                self.send_data("/remove_game", {"game": g}, ignore_errors=True)
+            sleep(0.12)
+            self._redeploy_engine_active_configs()
         except Exception:
             pass
 
@@ -399,13 +434,25 @@ class SteelSeriesAPI:
     def register_game(self):
         self._stop_conflicting_gg_apps()
 
-        # Clean up legacy and conflicting game entries if they exist in SteelSeries GG
-        for legacy in ["OLED_CUSTOMIZER", "OLED_CUSTOMIZER_V1", "OLED_CUSTOMIZER_V2", "OLED_CUSTOMIZER_V3", "NOW_PLAYING"]:
+        # Clean up legacy and conflicting game entries (plus AFK_GAME) in SteelSeries GG
+        cleanup_games = [
+            "OLED_CUSTOMIZER", "OLED_CUSTOMIZER_V1", "OLED_CUSTOMIZER_V2",
+            "OLED_CUSTOMIZER_V3", "STEELSERIES_OLED_CUSTOMIZER", "NOW_PLAYING", AFK_GAME
+        ]
+        # On first startup, also remove GAME once to purge any legacy LIGHTING
+        # composite-zones-in-use persisted in GG's SQLite database from older versions.
+        if not getattr(self, "_cleaned_main_game", False):
+            cleanup_games.append(GAME)
+            self._cleaned_main_game = True
+
+        for legacy in cleanup_games:
             try:
+                self.send_data("/stop_game", {"game": legacy}, ignore_errors=True)
                 self.send_data("/remove_game", {"game": legacy}, ignore_errors=True)
             except Exception:
                 pass
 
+        sleep(0.08)
         self.send_data("/game_metadata", {
             "game": GAME,
             "game_display_name": GAME_DISPLAY_NAME,
@@ -414,7 +461,7 @@ class SteelSeriesAPI:
         })
 
     def heartbeat(self):
-        """Send a lightweight heartbeat to keep the game registered."""
+        """Send a lightweight heartbeat to keep the game(s) registered."""
         if self._stop_conflicting_gg_apps():
             try:
                 self.send_data("/remove_game", {"game": "NOW_PLAYING"}, ignore_errors=True)
@@ -422,6 +469,8 @@ class SteelSeriesAPI:
                 pass
         try:
             self.send_data("/game_heartbeat", {"game": GAME})
+            if getattr(self, "_lighting_bound", False) and not getattr(self, "_lighting_active", True):
+                self.send_data("/game_heartbeat", {"game": AFK_GAME}, ignore_errors=True)
         except Exception:
             pass
 

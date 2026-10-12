@@ -288,3 +288,16 @@ def get_last_input_info() -> tuple[int, int]:
         return (int(lii.dwTime), int(idle_ms))
     return (0, 0)
 
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+def get_cursor_pos() -> tuple[int, int]:
+    """Returns current physical mouse cursor screen coordinates (x, y)."""
+    pt = POINT()
+    if ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
+        return (int(pt.x), int(pt.y))
+    return (0, 0)
+
+

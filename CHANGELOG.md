@@ -4,7 +4,17 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 **Project Versioning Policy:**
 - **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.56`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.57`).
+
+---
+
+## [`v1.57`] — 2026-10-12 — Apex 7 Onboard Hardware `idle_timeout` Override During Mouse Activity & `GetCursorPos` Tracking
+### ✨ Bug Fixes & Improvements (`+0.01`)
+- **Apex 7 Onboard Hardware `idle_timeout` Override (`src/SteelSeriesAPI.py`):**
+  - Root-caused why the **Apex 7** keyboard turned off its own RGB LEDs after 5 minutes of using only the mouse even when `SteelSeries OLED & RGB Hub` stayed in active (`AFK = False`) mode: SteelSeries GG Engine's default keyboard profile (`Config 1`) programs an onboard hardware `idle_timeout` (`{"timeout": 300000}` = 5 minutes, `idle_default_color: {r:0, g:0, b:0}`) directly into the keyboard's USB microcontroller, which only counts physical keypresses on the keyboard and is completely blind to mouse movement in Windows.
+  - Updated `_redeploy_engine_active_configs()` to inspect the active Engine configuration via `GET /configuration/<id>` and automatically set `"idle_timeout": {"timeout": 0}` (`Never`) via `PUT /configuration/<id>` before calling `POST /configuration/<id>/forceDeploy`. This ensures the keyboard never turns off on its own while the user is moving the mouse, delegating AFK blackout uniformly to `SteelSeries OLED & RGB Hub`.
+- **Triple-Redundant Mouse & Keyboard Activity Tracking (`src/DisplayManager.py`, `src/utils.py`):**
+  - Added `get_cursor_pos()` (`user32.GetCursorPos`) cursor coordinate tracking alongside `GetLastInputInfo()` and low-level `WH_MOUSE_LL` / `WH_KEYBOARD_LL` hooks (`_last_hook_input_ms`), taking `min(win_idle_ms, hook_idle_ms, cursor_idle_ms)` so any physical mouse movement, click, or keypress reliably resets the AFK timer and wakes from AFK.
 
 ---
 

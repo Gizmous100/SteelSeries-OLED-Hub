@@ -129,8 +129,10 @@ class SteelSeriesAPI:
         """
         Redeploy the active SteelSeries GG Engine configuration on connected RGB
         devices via encryptedAddress (/configuration/<id>/forceDeploy).
-        This prevents Rival 5 1-frame steady profiles from staying on hardware
-        default orange (#FC4E02) after GameSense's internal-lighting-reset (0x22).
+        Also disables any conflicting onboard hardware idle_timeout (e.g. Apex 7's
+        default 300000ms keyboard-only firmware timer that dims the keyboard even
+        while the user is actively moving the mouse) so AFK blackout is managed
+        uniformly across keyboard, mouse, and OLED by SteelSeries OLED & RGB Hub.
         """
         if not self.encrypted_address:
             return
@@ -145,14 +147,50 @@ class SteelSeriesAPI:
                 if not dev.get("supports_prism_sync") and dev.get("type") not in (0, 1):
                     continue
                 cfgs = dev.get("configuration_metadata") or []
+                for cfg_meta in cfgs:
+                    cid = cfg_meta.get("id")
+                    if not cid:
+                        continue
+                    try:
+                        get_req = urllib.request.Request(f"{self.encrypted_address}/configuration/{cid}")
+                        with urllib.request.urlopen(get_req, context=ctx, timeout=1.5) as c_resp:
+                            cfg_wrapper = loads(c_resp.read().decode("utf-8"))
+                        cfg_obj = cfg_wrapper.get("configuration") or {}
+                        raw_settings = cfg_obj.get("settings")
+                        if isinstance(raw_settings, str) and "idle_timeout" in raw_settings:
+                            settings_dict = loads(raw_settings)
+                            idle_to = settings_dict.get("idle_timeout")
+                            if isinstance(idle_to, dict) and int(idle_to.get("timeout") or 0) > 0:
+                                prev_to = idle_to.get("timeout")
+                                settings_dict["idle_timeout"] = {"timeout": 0}
+                                cfg_obj["settings"] = dumps(settings_dict)
+                                cfg_obj.pop("undeployedsettings", None)
+                                put_req = urllib.request.Request(
+                                    f"{self.encrypted_address}/configuration/{cid}",
+                                    data=dumps(cfg_obj).encode("utf-8"),
+                                    headers={"Content-Type": "application/json"},
+                                    method="PUT",
+                                )
+                                with urllib.request.urlopen(put_req, context=ctx, timeout=2.0) as _:
+                                    pass
+                                logger.info(
+                                    "Disabled onboard hardware idle_timeout (was %sms) in Engine config '%s' on %s",
+                                    prev_to,
+                                    cfg_meta.get("name"),
+                                    dev.get("name"),
+                                )
+                    except Exception as ie:
+                        logger.debug("Onboard idle_timeout check skipped for %s: %s", cid, ie)
+
                 active_cfg = (
-                    next((c for c in cfgs if c.get("active") == 1), None)
+                    next((c for c in cfgs if c.get("active") == 1 and c.get("last_deployed") == 1), None)
                     or next((c for c in cfgs if c.get("last_deployed") == 1), None)
+                    or next((c for c in cfgs if c.get("active") == 1), None)
                 )
                 if active_cfg and active_cfg.get("id"):
-                    cid = active_cfg["id"]
+                    active_cid = active_cfg["id"]
                     deploy_req = urllib.request.Request(
-                        f"{self.encrypted_address}/configuration/{cid}/forceDeploy",
+                        f"{self.encrypted_address}/configuration/{active_cid}/forceDeploy",
                         data=b"",
                         method="POST",
                     )
@@ -161,7 +199,7 @@ class SteelSeriesAPI:
                     logger.debug(
                         "Redeployed active Engine config '%s' (%s) on %s",
                         active_cfg.get("name"),
-                        cid,
+                        active_cid,
                         dev.get("name"),
                     )
         except Exception as e:

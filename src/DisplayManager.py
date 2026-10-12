@@ -18,7 +18,7 @@ from src.HardwareMonitor import HardwareMonitor
 from src.ExtensionReceiver import ExtensionReceiver
 from src.DiscordRPC import DiscordIPC
 from src.HIDListener import HIDListener
-from src.utils import is_process_running, find_steelseries_gg_path, launch_process, get_idle_time_ms, get_last_input_info
+from src.utils import is_process_running, find_steelseries_gg_path, launch_process, get_idle_time_ms, get_last_input_info, get_cursor_pos
 import asyncio
 
 logger = logging.getLogger("OLED Customizer")
@@ -196,7 +196,10 @@ class DisplayManager:
         self._afk_settled = False
         self._afk_settled_time = 0
         self._afk_baseline_input_tick = 0
-        self._last_hook_input_ms = 0
+        self._afk_baseline_cursor_pos = get_cursor_pos()
+        self._last_hook_input_ms = now_ms
+        self._last_cursor_pos = self._afk_baseline_cursor_pos
+        self._last_cursor_move_ms = now_ms
 
         # Spotify worker thread (single persistent thread instead of spawning new ones)
         self._spotify_queue = Queue(maxsize=1)
@@ -821,11 +824,14 @@ class DisplayManager:
         sleep(1.5)
         now_ms = int(time() * 1000)
         last_input_tick, _ = get_last_input_info()
+        cur_pos = get_cursor_pos()
         self._is_afk = True
         self._afk_toggled_time = now_ms
         self._afk_settled = False
         self._afk_settled_time = now_ms + 1500
         self._afk_baseline_input_tick = last_input_tick
+        self._afk_baseline_cursor_pos = cur_pos
+        self._last_cursor_pos = cur_pos
         self._last_sent_frame = None
         logger.info("AFK State changed to: True (triggered via Settings Test AFK button)")
         self._sync_lighting_state()
@@ -1065,12 +1071,19 @@ class DisplayManager:
                 self.state = State.SHOW_CLOCK
 
             # --- AFK Logic ---
+            cur_pos = get_cursor_pos()
+            if cur_pos != self._last_cursor_pos and cur_pos != (0, 0):
+                self._last_cursor_pos = cur_pos
+                self._last_cursor_move_ms = now_ms
+
             if self.user_preferences.get_preference("afk_enabled"):
                 game_blocks_afk = (
                     bool(self.user_preferences.get_preference("afk_disable_in_games"))
                     and self.hardware_monitor.is_fullscreen_game_active()
                 )
                 if game_blocks_afk:
+                    self._last_cursor_move_ms = now_ms
+                    self._last_hook_input_ms = now_ms
                     if self._is_afk:
                         self._is_afk = False
                         self._afk_toggled_time = now_ms
@@ -1079,7 +1092,10 @@ class DisplayManager:
                         logger.info("AFK State changed to: False (suppressed by active game)")
                         self._sync_lighting_state()
                 else:
-                    last_input_tick, idle_ms = get_last_input_info()
+                    last_input_tick, win_idle_ms = get_last_input_info()
+                    hook_idle_ms = max(0, now_ms - self._last_hook_input_ms) if self._last_hook_input_ms > 0 else win_idle_ms
+                    cursor_idle_ms = max(0, now_ms - self._last_cursor_move_ms) if self._last_cursor_move_ms > 0 else win_idle_ms
+                    idle_ms = min(win_idle_ms, hook_idle_ms, cursor_idle_ms)
 
                     if not self._is_afk:
                         # User is currently active: enter AFK when idle time exceeds timeout
@@ -1089,6 +1105,7 @@ class DisplayManager:
                             self._afk_settled = False
                             self._afk_settled_time = now_ms + 1500
                             self._afk_baseline_input_tick = last_input_tick
+                            self._afk_baseline_cursor_pos = cur_pos
                             self._last_sent_frame = None
                             logger.info(f"AFK State changed to: True (idle: {idle_ms}ms >= {self._afk_timeout_ms}ms)")
                             self._sync_lighting_state()
@@ -1106,12 +1123,15 @@ class DisplayManager:
                                 self._afk_settled = True
                                 self._afk_settled_time = now_ms
                                 self._afk_baseline_input_tick = last_input_tick
+                                self._afk_baseline_cursor_pos = cur_pos
                         else:
-                            # Once settled, ANY fresh mouse movement, click, or keypress updates last_input_tick or _last_hook_input_ms
+                            # Once settled, ANY fresh mouse movement, click, or keypress wakes from AFK
                             if (
                                 last_input_tick != self._afk_baseline_input_tick
                                 or idle_ms < 1000
                                 or self._last_hook_input_ms > self._afk_settled_time
+                                or self._last_cursor_move_ms > self._afk_settled_time
+                                or (cur_pos != self._afk_baseline_cursor_pos and cur_pos != (0, 0))
                             ):
                                 self._is_afk = False
                                 self._afk_toggled_time = now_ms

@@ -279,3 +279,25 @@ def get_idle_time_ms() -> int:
         return (ctypes.windll.kernel32.GetTickCount() - lii.dwTime) & 0xFFFFFFFF
     return 0
 
+def get_last_input_info() -> tuple[int, int]:
+    """Returns (last_input_tick, idle_time_ms)."""
+    lii = LASTINPUTINFO()
+    lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
+    if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
+        idle_ms = (ctypes.windll.kernel32.GetTickCount() - lii.dwTime) & 0xFFFFFFFF
+        return (int(lii.dwTime), int(idle_ms))
+    return (0, 0)
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+def get_cursor_pos() -> tuple[int, int]:
+    """Returns current physical mouse cursor screen coordinates (x, y)."""
+    pt = POINT()
+    if ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
+        return (int(pt.x), int(pt.y))
+    return (0, 0)
+
+

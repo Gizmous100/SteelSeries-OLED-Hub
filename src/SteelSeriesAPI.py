@@ -7,6 +7,8 @@ import urllib3
 
 GAME = "STEELSERIES_OLED_HUB"
 GAME_DISPLAY_NAME = "SteelSeries OLED & RGB Hub"
+AFK_GAME = "STEELSERIES_AFK_RGB"
+AFK_GAME_DISPLAY_NAME = "SteelSeries OLED Hub (AFK Blackout)"
 AUTHOR = "gizmous (orig. 0z-zy)"
 EVENT = "UPDATE"
 
@@ -22,6 +24,7 @@ class SteelSeriesAPI:
             path.join(programdata, "SteelSeries", "SteelSeries GG", "coreProps.json"),
         ]
         self.address = ""
+        self.encrypted_address = ""
         
         # Use urllib3 PoolManager directly for maximum performance and minimal object churn.
         # requests.Session creates many heavy objects (Headers, CaseInsensitiveDict, etc.)
@@ -44,11 +47,10 @@ class SteelSeriesAPI:
         self._BACKOFF_DURATIONS = [2.0, 5.0, 10.0]
         self._RESET_THRESHOLD = 10       # Force re-register after this many consecutive errors
         self._is_resetting = False      # Prevent overlapping resets
-        if initial_rgb and len(initial_rgb) == 3:
-            self._current_color = (int(initial_rgb[0]), int(initial_rgb[1]), int(initial_rgb[2]))
-        else:
-            self._current_color = (255, 255, 255)
-        self._lighting_active = bool(initial_active)
+        self._lighting_active = True
+        self._lighting_bound = False
+        self._last_lighting_release_ts = 0.0
+        self._cleaned_main_game = False
         
         # Pre-allocate static headers to reduce object churn
         self._static_headers = {
@@ -87,8 +89,12 @@ class SteelSeriesAPI:
                 with open(coreprops, "r", encoding="utf-8") as f:
                     data = loads(f.readline())
                     self.address = "http://" + data["address"]
+                    enc_addr = data.get("encryptedAddress")
+                    self.encrypted_address = ("https://" + enc_addr) if enc_addr else ""
 
                 # Clean start: register and bind
+                self._lighting_bound = False
+                self._last_lighting_release_ts = 0.0
                 self.register_game()
                 self.bind_game_event()
 
@@ -111,16 +117,237 @@ class SteelSeriesAPI:
         try:
             logger.info("Resetting SteelSeries connection...")
             self.address = ""
+            self.encrypted_address = ""
+            self._lighting_bound = False
+            self._last_lighting_release_ts = 0.0
             # Limit retries during resets to avoid blocking the main thread forever
             self.retrieve_address(retries=2)
         finally:
             self._is_resetting = False
 
-    def bind_game_event(self, rgb_color=None):
+    def _redeploy_engine_active_configs(self):
+        """
+        Redeploy the active SteelSeries GG Engine configuration on connected RGB
+        devices via encryptedAddress (/configuration/<id>/forceDeploy).
+        Also disables any conflicting onboard hardware idle_timeout (e.g. Apex 7's
+        default 300000ms keyboard-only firmware timer that dims the keyboard even
+        while the user is actively moving the mouse) so AFK blackout is managed
+        uniformly across keyboard, mouse, and OLED by SteelSeries OLED & RGB Hub.
+        """
+        if not self.encrypted_address:
+            return
+        try:
+            import ssl
+            import urllib.request
+            ctx = ssl._create_unverified_context()
+            req = urllib.request.Request(f"{self.encrypted_address}/v1/connectedDevices")
+            with urllib.request.urlopen(req, context=ctx, timeout=1.5) as resp:
+                payload = loads(resp.read().decode("utf-8"))
+            for dev in payload.get("devices", []):
+                if not dev.get("supports_prism_sync") and dev.get("type") not in (0, 1):
+                    continue
+                cfgs = dev.get("configuration_metadata") or []
+                for cfg_meta in cfgs:
+                    cid = cfg_meta.get("id")
+                    if not cid:
+                        continue
+                    try:
+                        get_req = urllib.request.Request(f"{self.encrypted_address}/configuration/{cid}")
+                        with urllib.request.urlopen(get_req, context=ctx, timeout=1.5) as c_resp:
+                            cfg_wrapper = loads(c_resp.read().decode("utf-8"))
+                        cfg_obj = cfg_wrapper.get("configuration") or {}
+                        raw_settings = cfg_obj.get("settings")
+                        if isinstance(raw_settings, str) and "idle_timeout" in raw_settings:
+                            settings_dict = loads(raw_settings)
+                            idle_to = settings_dict.get("idle_timeout")
+                            if isinstance(idle_to, dict) and int(idle_to.get("timeout") or 0) > 0:
+                                prev_to = idle_to.get("timeout")
+                                settings_dict["idle_timeout"] = {"timeout": 0}
+                                cfg_obj["settings"] = dumps(settings_dict)
+                                cfg_obj.pop("undeployedsettings", None)
+                                put_req = urllib.request.Request(
+                                    f"{self.encrypted_address}/configuration/{cid}",
+                                    data=dumps(cfg_obj).encode("utf-8"),
+                                    headers={"Content-Type": "application/json"},
+                                    method="PUT",
+                                )
+                                with urllib.request.urlopen(put_req, context=ctx, timeout=2.0) as _:
+                                    pass
+                                logger.info(
+                                    "Disabled onboard hardware idle_timeout (was %sms) in Engine config '%s' on %s",
+                                    prev_to,
+                                    cfg_meta.get("name"),
+                                    dev.get("name"),
+                                )
+                    except Exception as ie:
+                        logger.debug("Onboard idle_timeout check skipped for %s: %s", cid, ie)
+
+                active_cfg = (
+                    next((c for c in cfgs if c.get("active") == 1 and c.get("last_deployed") == 1), None)
+                    or next((c for c in cfgs if c.get("last_deployed") == 1), None)
+                    or next((c for c in cfgs if c.get("active") == 1), None)
+                )
+                if active_cfg and active_cfg.get("id"):
+                    active_cid = active_cfg["id"]
+                    deploy_req = urllib.request.Request(
+                        f"{self.encrypted_address}/configuration/{active_cid}/forceDeploy",
+                        data=b"",
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(deploy_req, context=ctx, timeout=1.5) as _:
+                        pass
+                    logger.debug(
+                        "Redeployed active Engine config '%s' (%s) on %s",
+                        active_cfg.get("name"),
+                        active_cid,
+                        dev.get("name"),
+                    )
+        except Exception as e:
+            logger.debug("Engine active config redeploy skipped/failed: %s", e)
+
+    def _bind_lighting_event(self) -> bool:
+        """
+        Register the dedicated AFK_GAME and bind its LIGHTING event for Keyboard
+        and Mouse RGB zones during AFK blackout:
+        - Value 0 = AFK blackout [0, 0, 0] across all keyboard and mouse illumination zones.
+        Keeping AFK lighting in a separate GameSense game (STEELSERIES_AFK_RGB) ensures
+        thatSTEELSERIES_OLED_HUB's Lisp sandbox never accumulates composite-zones-in-use
+        for Rival 5, and /remove_game on STEELSERIES_AFK_RGB cleanly destroys its sandbox.
+        """
+        self.send_data("/game_metadata", {
+            "game": AFK_GAME,
+            "game_display_name": AFK_GAME_DISPLAY_NAME,
+            "developer": AUTHOR,
+            "deinitialize_timer_length_ms": 60000
+        }, ignore_errors=True)
+
+        color_ranges = [
+            {"low": 0, "high": 1, "color": {"red": 0, "green": 0, "blue": 0}}
+        ]
+
+        lighting_handlers = [
+            # Keyboard full-device specifiers
+            {
+                "device-type": "rgb-per-key-zones",
+                "zone": "all",
+                "mode": "color",
+                "color": color_ranges
+            },
+            {
+                "device-type": "keyboard",
+                "zone": "all",
+                "mode": "color",
+                "color": color_ranges
+            },
+            # Mouse full-device specifiers
+            {
+                "device-type": "mouse",
+                "zone": "all",
+                "mode": "color",
+                "color": color_ranges
+            },
+            {
+                "device-type": "mouse",
+                "zone": "wheel",
+                "mode": "color",
+                "color": color_ranges
+            },
+            {
+                "device-type": "mouse",
+                "zone": "logo",
+                "mode": "color",
+                "color": color_ranges
+            },
+            {
+                "device-type": "rgb-10-zone",
+                "zone": "all",
+                "mode": "color",
+                "color": color_ranges
+            },
+            {
+                "device-type": "rgb-zoned-device",
+                "zone": "all",
+                "mode": "color",
+                "color": color_ranges
+            },
+        ]
+
+        # Multi-zone mouse specific zones (e.g. Rival 5 10 zones, Rival 600 8 zones, etc.)
+        for zone_name in ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"):
+            lighting_handlers.append({
+                "device-type": "rgb-10-zone",
+                "zone": zone_name,
+                "mode": "color",
+                "color": color_ranges
+            })
+            lighting_handlers.append({
+                "device-type": "rgb-zoned-device",
+                "zone": zone_name,
+                "mode": "color",
+                "color": color_ranges
+            })
+
+        for general_type in ("rgb-1-zone", "rgb-2-zone", "rgb-3-zone", "rgb-5-zone", "rgb-8-zone", "rgb-12-zone"):
+            lighting_handlers.append({
+                "device-type": general_type,
+                "zone": "all",
+                "mode": "color",
+                "color": color_ranges
+            })
+
+        ok = self.send_data("/bind_game_event", {
+            "game": AFK_GAME,
+            "event": "LIGHTING",
+            "min_value": 0,
+            "max_value": 1,
+            "value_optional": True,
+            "handlers": lighting_handlers
+        })
+        self._lighting_bound = bool(ok)
+        if ok:
+            logger.info("Bound LIGHTING event on %s for AFK blackout (Keyboard + Mouse RGB [0, 0, 0])", AFK_GAME)
+        return bool(ok)
+
+    def release_lighting_to_gg(self, force: bool = False) -> bool:
+        """
+        Stop and remove the dedicated AFK_GAME (STEELSERIES_AFK_RGB) so its Lisp VM
+        composite-zones-in-use table is completely destroyed, wait for deinitialize:
+        (0x22 internal-lighting-reset) to complete, and force-deploy active SteelSeries
+        GG Engine configurations so keyboard and mouse illumination are 100% native.
+        """
+        if not self.address:
+            return False
+        now = time()
+        if not getattr(self, "_lighting_bound", False):
+            if not force or (now - getattr(self, "_last_lighting_release_ts", 0.0) < 2.0):
+                return True
+
+        self.send_data("/remove_game_event", {
+            "game": AFK_GAME,
+            "event": "LIGHTING"
+        }, ignore_errors=True)
+        self.send_data("/stop_game", {
+            "game": AFK_GAME
+        }, ignore_errors=True)
+        self.send_data("/remove_game", {
+            "game": AFK_GAME
+        }, ignore_errors=True)
+        self._lighting_bound = False
+        self._last_lighting_release_ts = time()
+
+        # Wait ~120ms for generic-initializer.lsp deinitialize: (internal-lighting-reset 0x22)
+        # to finish, then redeploy active Engine configs so Rival 5 1-frame steady
+        # profiles do not remain on factory orange (#FC4E02).
+        sleep(0.12)
+        self._redeploy_engine_active_configs()
+        logger.info("Released AFK lighting (%s) and restored SteelSeries GG Engine native configs", AFK_GAME)
+        return True
+
+    def bind_game_event(self):
         # Apex 7 Pro OLED = 128x40 (640 byte)
         dummy_128x40 = [0 for _ in range(640)]
 
-        # 1. Screen handler for OLED
+        # 1. Screen handler for OLED (strictly on GAME = STEELSERIES_OLED_HUB)
         update_handlers = [
             {
                 "device-type": "screened-128x40",
@@ -138,58 +365,27 @@ class SteelSeriesAPI:
             "handlers": update_handlers
         })
 
-        # 2. Lighting handler for Keyboard and Mouse (Rival 5 / multi-zone mice)
-        # Value 0 = AFK (blackout [0,0,0])
-        # Value 1 = Active (user color [r,g,b])
-        if rgb_color is not None:
-            self._current_color = tuple(int(c) for c in rgb_color)
-        r, g, b = self._current_color if self._current_color is not None else (255, 255, 255)
-
-        color_ranges = [
-            {"low": 0, "high": 0, "color": {"red": 0, "green": 0, "blue": 0}},
-            {"low": 1, "high": 1, "color": {"red": r, "green": g, "blue": b}}
-        ]
-
-        lighting_handlers = [
-            {
-                "device-type": "rgb-per-key-zones",
-                "zone": "all",
-                "mode": "color",
-                "color": color_ranges
-            }
-        ]
-
-        # Multi-zone RGB devices (e.g. Rival 5 uses rgb-10-zone 'one'..'ten')
-        for zone_name in ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"):
-            lighting_handlers.append({
-                "device-type": "rgb-zoned-device",
-                "zone": zone_name,
-                "mode": "color",
-                "color": color_ranges
-            })
-
-        # Legacy 2-zone mouse specifiers
-        for mouse_zone in ("wheel", "logo"):
-            lighting_handlers.append({
-                "device-type": "mouse",
-                "zone": mouse_zone,
-                "mode": "color",
-                "color": color_ranges
-            })
-
-        self.send_data("/bind_game_event", {
+        # Trigger initial UPDATE event so GAME's Generic-Initializer runs initialize: now
+        # rather than after _redeploy_engine_active_configs().
+        self.send_data("/game_event", {
             "game": GAME,
-            "event": "LIGHTING",
-            "min_value": 0,
-            "max_value": 1,
-            "value_optional": True,
-            "handlers": lighting_handlers
-        })
+            "event": EVENT,
+            "data": {
+                "value": 100,
+                "frame": {"image-data-128x40": dummy_128x40}
+            }
+        }, ignore_errors=True)
 
-        # Immediately apply current lighting state so GameSense never leaves the mouse on default orange
-        self.set_lighting(getattr(self, "_lighting_active", True))
+        # 2. Only bind LIGHTING on AFK_GAME when in AFK blackout; otherwise ensure
+        # AFK_GAME is removed and native GG Engine configs are deployed.
+        if not getattr(self, "_lighting_active", True):
+            self._bind_lighting_event()
+            self.set_lighting(False)
+        else:
+            sleep(0.1)
+            self._redeploy_engine_active_configs()
 
-        logger.info("Bound game events: UPDATE (OLED) and LIGHTING (Keyboard + Mouse RGB [%d, %d, %d])", r, g, b)
+        logger.info("Bound game event: UPDATE (OLED 128x40)")
 
     def send_frame(self, image_128x40):
         if not isinstance(image_128x40, (list, bytes, bytearray)):
@@ -209,25 +405,25 @@ class SteelSeriesAPI:
         })
 
     def set_lighting(self, active: bool):
-        """Send lighting event: value 1 (user color) or value 0 (AFK blackout)."""
-        val = 1 if active else 0
+        """
+        Apply AFK lighting transition:
+        - active=False (AFK mode): register/bind AFK_GAME LIGHTING and send value 0 ([0, 0, 0] blackout).
+        - active=True (Wake / Normal): stop and remove AFK_GAME and redeploy active SteelSeries GG
+          Engine configs so keyboard & mouse colors are restored natively.
+        """
         self._lighting_active = bool(active)
-        return self.send_data("/game_event", {
-            "game": GAME,
-            "event": "LIGHTING",
-            "data": {"value": val}
-        })
 
-    def update_rgb_color(self, r, g, b):
-        """Update active color mapping if it changed."""
-        new_color = (int(r), int(g), int(b))
-        if getattr(self, "_current_color", None) != new_color:
-            self._current_color = new_color
-            if self.address:
-                self.bind_game_event(rgb_color=new_color)
+        if not active:
+            if not getattr(self, "_lighting_bound", False):
+                if not self._bind_lighting_event():
+                    return False
+            return self.send_data("/game_event", {
+                "game": AFK_GAME,
+                "event": "LIGHTING",
+                "data": {"value": 0}
+            })
 
-    def send_rgb(self, r, g, b):
-        self.update_rgb_color(r, g, b)
+        return self.release_lighting_to_gg(force=True)
 
     def clear_rgb(self):
         self.set_lighting(False)
@@ -236,8 +432,13 @@ class SteelSeriesAPI:
         self.set_lighting(not active)
 
     def remove_game(self):
+        """Cleanly stop and remove GameSense games on exit and restore native GG Engine configs."""
         try:
-            self.send_data("/remove_game", {"game": GAME}, ignore_errors=True)
+            for g in (AFK_GAME, GAME):
+                self.send_data("/stop_game", {"game": g}, ignore_errors=True)
+                self.send_data("/remove_game", {"game": g}, ignore_errors=True)
+            sleep(0.12)
+            self._redeploy_engine_active_configs()
         except Exception:
             pass
 
@@ -271,13 +472,25 @@ class SteelSeriesAPI:
     def register_game(self):
         self._stop_conflicting_gg_apps()
 
-        # Clean up legacy and conflicting game entries if they exist in SteelSeries GG
-        for legacy in ["OLED_CUSTOMIZER", "OLED_CUSTOMIZER_V1", "OLED_CUSTOMIZER_V2", "OLED_CUSTOMIZER_V3", "NOW_PLAYING"]:
+        # Clean up legacy and conflicting game entries (plus AFK_GAME) in SteelSeries GG
+        cleanup_games = [
+            "OLED_CUSTOMIZER", "OLED_CUSTOMIZER_V1", "OLED_CUSTOMIZER_V2",
+            "OLED_CUSTOMIZER_V3", "STEELSERIES_OLED_CUSTOMIZER", "NOW_PLAYING", AFK_GAME
+        ]
+        # On first startup, also remove GAME once to purge any legacy LIGHTING
+        # composite-zones-in-use persisted in GG's SQLite database from older versions.
+        if not getattr(self, "_cleaned_main_game", False):
+            cleanup_games.append(GAME)
+            self._cleaned_main_game = True
+
+        for legacy in cleanup_games:
             try:
+                self.send_data("/stop_game", {"game": legacy}, ignore_errors=True)
                 self.send_data("/remove_game", {"game": legacy}, ignore_errors=True)
             except Exception:
                 pass
 
+        sleep(0.08)
         self.send_data("/game_metadata", {
             "game": GAME,
             "game_display_name": GAME_DISPLAY_NAME,
@@ -286,7 +499,7 @@ class SteelSeriesAPI:
         })
 
     def heartbeat(self):
-        """Send a lightweight heartbeat to keep the game registered."""
+        """Send a lightweight heartbeat to keep the game(s) registered."""
         if self._stop_conflicting_gg_apps():
             try:
                 self.send_data("/remove_game", {"game": "NOW_PLAYING"}, ignore_errors=True)
@@ -294,6 +507,8 @@ class SteelSeriesAPI:
                 pass
         try:
             self.send_data("/game_heartbeat", {"game": GAME})
+            if getattr(self, "_lighting_bound", False) and not getattr(self, "_lighting_active", True):
+                self.send_data("/game_heartbeat", {"game": AFK_GAME}, ignore_errors=True)
         except Exception:
             pass
 

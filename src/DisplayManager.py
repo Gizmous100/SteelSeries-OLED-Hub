@@ -18,7 +18,7 @@ from src.HardwareMonitor import HardwareMonitor
 from src.ExtensionReceiver import ExtensionReceiver
 from src.DiscordRPC import DiscordIPC
 from src.HIDListener import HIDListener
-from src.utils import is_process_running, find_steelseries_gg_path, launch_process, get_idle_time_ms
+from src.utils import is_process_running, find_steelseries_gg_path, launch_process, get_idle_time_ms, get_last_input_info, get_cursor_pos
 import asyncio
 
 logger = logging.getLogger("OLED Customizer")
@@ -69,9 +69,7 @@ class DisplayManager:
         else:
             self.spotify_api = None
         
-        init_rgb = self.user_preferences.get_preference("rgb_color") or [255, 255, 255]
-        init_rgb_enabled = bool(self.user_preferences.get_preference("rgb_enabled"))
-        self.steelseries_api = SteelSeriesAPI(initial_rgb=init_rgb, initial_active=init_rgb_enabled)
+        self.steelseries_api = SteelSeriesAPI()
         
         # Lock for thread-safety across shared state like self.player
         self._lock = __import__('threading').Lock()
@@ -136,12 +134,16 @@ class DisplayManager:
         self._set_headset_hid_sync_enabled(
             bool(self.user_preferences.get_preference("headset_hid_sync_enabled"))
         )
-        # Headset battery, shown top-left on the clock (opt-in; needs HID sync)
+        # Headset battery, shown top-right on the clock (opt-in; needs HID sync)
         self.timer.battery_getter = lambda: (
             self._hid_listener.current_battery() if self._hid_listener else None
         )
         self.timer.weather_getter = lambda: (
             self.weather.get_weather_data() if hasattr(self, "weather") else None
+        )
+        self.timer.mute_status_getter = self._get_clock_mute_status
+        self.timer.show_clock_mute_icons = bool(
+            self.user_preferences.get_preference("show_clock_mute_icons")
         )
         Thread(target=self._discord_rpc_loop, daemon=True, name="Discord-RPC").start()
 
@@ -174,7 +176,6 @@ class DisplayManager:
         self._gg_was_running = bool(self.steelseries_api.address)
         self._gg_check_ts = 0.0
         self._gg_running_cached = False
-        self._last_rgb_send_ms = 0
         self._last_lighting_state = None
 
         # STICKY SOURCE logic
@@ -191,9 +192,14 @@ class DisplayManager:
         
         self._is_afk = False
         self._afk_timeout_ms = 5 * 60 * 1000  # 5 minutes by default
-        self._effective_idle_start = int(time() * 1000)
-        self._last_raw_idle_ms = 0
         self._afk_toggled_time = 0
+        self._afk_settled = False
+        self._afk_settled_time = 0
+        self._afk_baseline_input_tick = 0
+        self._afk_baseline_cursor_pos = get_cursor_pos()
+        self._last_hook_input_ms = now_ms
+        self._last_cursor_pos = self._afk_baseline_cursor_pos
+        self._last_cursor_move_ms = now_ms
 
         # Spotify worker thread (single persistent thread instead of spawning new ones)
         self._spotify_queue = Queue(maxsize=1)
@@ -202,18 +208,10 @@ class DisplayManager:
         # Config hot-reloading tracker
         self._config_file_path = self.user_preferences.config_path
         self._last_config_mtime = 0
-        self._engine_db_paths = [
-            r"C:\ProgramData\SteelSeries\GG\apps\engine\db\database.db-wal",
-            r"C:\ProgramData\SteelSeries\GG\apps\engine\db\database.db",
-        ]
-        self._last_engine_db_mtime = 0
         try:
             import os
             if os.path.exists(self._config_file_path):
                 self._last_config_mtime = os.path.getmtime(self._config_file_path)
-            engine_mtimes = [os.path.getmtime(p) for p in self._engine_db_paths if os.path.exists(p)]
-            if engine_mtimes:
-                self._last_engine_db_mtime = max(engine_mtimes)
         except Exception:
             pass
         self._last_config_check_ts = time()
@@ -487,6 +485,10 @@ class DisplayManager:
                         vk = ctypes.c_uint32.from_address(addr).value
                         flags = ctypes.c_uint32.from_address(addr + 8).value
 
+                        # Track non-injected physical keyboard events (LLKHF_INJECTED = 0x10)
+                        if (flags & 0x10) == 0:
+                            self._last_hook_input_ms = int(time() * 1000)
+
                         is_down = wParam in (WM_KEYDOWN, WM_SYSKEYDOWN)
                         is_up = wParam in (WM_KEYUP, WM_SYSKEYUP)
 
@@ -590,9 +592,14 @@ class DisplayManager:
             def _mouse_hook_callback(nCode, wParam, lParam):
                 try:
                     if nCode == HC_ACTION:
+                        addr = lParam & 0xFFFFFFFFFFFFFFFF
+                        m_flags = ctypes.c_uint32.from_address(addr + 12).value
+                        # Track non-injected physical mouse events (LLMHF_INJECTED = 0x01)
+                        if (m_flags & 0x01) == 0:
+                            self._last_hook_input_ms = int(time() * 1000)
+
                         if wParam == WM_XBUTTONDOWN:
                             # Read XBUTTON data from memory at lParam + 8
-                            addr = lParam & 0xFFFFFFFFFFFFFFFF
                             mouse_data = ctypes.c_uint32.from_address(addr + 8).value
                             xbutton = (mouse_data >> 16) & 0xFFFF
                             
@@ -730,7 +737,11 @@ class DisplayManager:
         self.timer_threshold = (
             max(int(self.user_preferences.get_preference("timer_threshold")), 0) * 1000
         )
-        self._afk_timeout_ms = max(int(self.user_preferences.get_preference("afk_timeout_minutes") or 5), 1) * 60 * 1000
+        try:
+            afk_mins = float(self.user_preferences.get_preference("afk_timeout_minutes") or 5)
+        except Exception:
+            afk_mins = 5.0
+        self._afk_timeout_ms = max(int(afk_mins * 60 * 1000), 5000)
 
         self.display_clock = self.user_preferences.get_preference("display_timer")
         self.display_player = self.user_preferences.get_preference("display_player")
@@ -760,6 +771,8 @@ class DisplayManager:
             self.user_preferences.get_preference("show_headset_battery"))
         self.timer.show_battery_percent = bool(
             self.user_preferences.get_preference("show_battery_percent"))
+        self.timer.show_clock_mute_icons = bool(
+            self.user_preferences.get_preference("show_clock_mute_icons"))
 
         if hasattr(self, "hardware_monitor"):
             self.hardware_monitor.update_preferences(self.user_preferences)
@@ -767,12 +780,17 @@ class DisplayManager:
         if hasattr(self, "weather"):
             self.weather.update_preferences(self.user_preferences)
 
-        color = self.user_preferences.get_preference("rgb_color")
-        if color and len(color) == 3 and hasattr(self, "steelseries_api"):
-            try:
-                self.steelseries_api.update_rgb_color(color[0], color[1], color[2])
-            except Exception:
-                pass
+        try:
+            import os
+            if os.path.exists(self._config_file_path):
+                self._last_config_mtime = os.path.getmtime(self._config_file_path)
+        except Exception:
+            pass
+
+        if not self.user_preferences.get_preference("afk_enabled") and self._is_afk:
+            self._is_afk = False
+            self._last_lighting_state = None
+            self._last_sent_frame = None
 
         # Hotkeys — convert preference strings to VK codes for the raw hook
         self._reload_hotkey_vks()
@@ -800,6 +818,45 @@ class DisplayManager:
             # If not ready (missing tokens) but config didn't change, we do NOTHING directly here.
             # The user must fix the config in the settings window to trigger the 'changed' path.
             # OR we could silently try to fetch if prompt_user=False? No, let's keep it clean.
+
+    def trigger_afk_test(self):
+        """Enter AFK mode after a short 1.5s delay so the user can test OLED + RGB blackout."""
+        sleep(1.5)
+        now_ms = int(time() * 1000)
+        last_input_tick, _ = get_last_input_info()
+        cur_pos = get_cursor_pos()
+        self._is_afk = True
+        self._afk_toggled_time = now_ms
+        self._afk_settled = False
+        self._afk_settled_time = now_ms + 1500
+        self._afk_baseline_input_tick = last_input_tick
+        self._afk_baseline_cursor_pos = cur_pos
+        self._last_cursor_pos = cur_pos
+        self._last_sent_frame = None
+        logger.info("AFK State changed to: True (triggered via Settings Test AFK button)")
+        self._sync_lighting_state()
+        try:
+            if self.steelseries_api.send_frame([0] * 640):
+                self._last_sent_frame = [0] * 640
+                self._last_frame_sent_time = time()
+        except Exception as e:
+            logger.debug("Initial AFK test blank frame failed: %s", e)
+
+    def _sync_lighting_state(self):
+        """
+        0 = AFK blackout ([0, 0, 0] on keyboard and mouse)
+        1 = Active (LIGHTING event unbound so SteelSeries GG Engine controls colors natively)
+        """
+        target_lighting = 0 if self._is_afk else 1
+        if self._last_lighting_state != target_lighting:
+            try:
+                if self.steelseries_api.set_lighting(not self._is_afk):
+                    self._last_lighting_state = target_lighting
+                else:
+                    self._last_lighting_state = None
+            except Exception as e:
+                self._last_lighting_state = None
+                logger.debug(f"Failed to set lighting state: {e}")
 
     # _parse_key removed — replaced by _key_str_to_vk and _reload_hotkey_vks above
 
@@ -873,7 +930,7 @@ class DisplayManager:
                 self._last_lighting_state = None
 
             now_sec = time()
-            # Automatic configuration hot-reloading (e.g. when saved from SteelSeries GG Settings GUI or Engine Config switch)
+            # Automatic configuration hot-reloading (e.g. when saved from Settings GUI)
             if now_sec - self._last_config_check_ts > 1.5:
                 self._last_config_check_ts = now_sec
                 try:
@@ -884,33 +941,15 @@ class DisplayManager:
                             self._last_config_mtime = mtime
                             logger.info("External configuration change detected, reloading preferences...")
                             self.load_preferences()
-                            self._last_lighting_state = None
                         elif not self._last_config_mtime:
                             self._last_config_mtime = mtime
-
-                    engine_mtimes = [os.path.getmtime(p) for p in self._engine_db_paths if os.path.exists(p)]
-                    if engine_mtimes:
-                        cur_engine_mtime = max(engine_mtimes)
-                        if self._last_engine_db_mtime and cur_engine_mtime > self._last_engine_db_mtime:
-                            self._last_engine_db_mtime = cur_engine_mtime
-                            logger.info("SteelSeries Engine configuration deployment detected, re-applying lighting state...")
-                            self._last_lighting_state = None
-                        elif not self._last_engine_db_mtime:
-                            self._last_engine_db_mtime = cur_engine_mtime
                 except Exception as e:
                     logger.debug("Failed checking config mtime: %s", e)
 
             now_ms = int(now_sec * 1000)
 
-            # 0) Lighting sync & AFK state
-            rgb_pref = self.user_preferences.get_preference("rgb_enabled")
-            target_lighting = 1 if (rgb_pref and not self._is_afk) else 0
-            if self._last_lighting_state != target_lighting:
-                try:
-                    if self.steelseries_api.set_lighting(bool(target_lighting)):
-                        self._last_lighting_state = target_lighting
-                except Exception as e:
-                    logger.debug(f"Failed to set lighting state: {e}")
+            # 0) AFK lighting state sync
+            self._sync_lighting_state()
 
             # 1) YT poll (hızlı)
             self.volume_overlay.update()
@@ -1032,67 +1071,99 @@ class DisplayManager:
                 self.state = State.SHOW_CLOCK
 
             # --- AFK Logic ---
+            cur_pos = get_cursor_pos()
+            if cur_pos != self._last_cursor_pos and cur_pos != (0, 0):
+                self._last_cursor_pos = cur_pos
+                self._last_cursor_move_ms = now_ms
+
             if self.user_preferences.get_preference("afk_enabled"):
-                raw_idle_ms = get_idle_time_ms()
-                
-                # Check if input occurred (raw idle time dropped)
-                if raw_idle_ms < self._last_raw_idle_ms - 1000:
-                    # Ignore inputs that happen within 3 seconds of toggling AFK (phantom inputs from SteelSeries API)
-                    if (now_ms - self._afk_toggled_time) < 3000:
-                        logger.debug("Ignoring phantom input triggered by AFK state change")
+                game_blocks_afk = (
+                    bool(self.user_preferences.get_preference("afk_disable_in_games"))
+                    and self.hardware_monitor.is_fullscreen_game_active()
+                )
+                if game_blocks_afk:
+                    self._last_cursor_move_ms = now_ms
+                    self._last_hook_input_ms = now_ms
+                    if self._is_afk:
+                        self._is_afk = False
+                        self._afk_toggled_time = now_ms
+                        self._afk_settled = False
+                        self._last_sent_frame = None
+                        logger.info("AFK State changed to: False (suppressed by active game)")
+                        self._sync_lighting_state()
+                else:
+                    last_input_tick, win_idle_ms = get_last_input_info()
+                    hook_idle_ms = max(0, now_ms - self._last_hook_input_ms) if self._last_hook_input_ms > 0 else win_idle_ms
+                    cursor_idle_ms = max(0, now_ms - self._last_cursor_move_ms) if self._last_cursor_move_ms > 0 else win_idle_ms
+                    idle_ms = min(win_idle_ms, hook_idle_ms, cursor_idle_ms)
+
+                    if not self._is_afk:
+                        # User is currently active: enter AFK when idle time exceeds timeout
+                        if idle_ms >= self._afk_timeout_ms:
+                            self._is_afk = True
+                            self._afk_toggled_time = now_ms
+                            self._afk_settled = False
+                            self._afk_settled_time = now_ms + 1500
+                            self._afk_baseline_input_tick = last_input_tick
+                            self._afk_baseline_cursor_pos = cur_pos
+                            self._last_sent_frame = None
+                            logger.info(f"AFK State changed to: True (idle: {idle_ms}ms >= {self._afk_timeout_ms}ms)")
+                            self._sync_lighting_state()
+                            try:
+                                if self.steelseries_api.send_frame([0] * 640):
+                                    self._last_sent_frame = [0] * 640
+                                    self._last_frame_sent_time = time()
+                            except Exception:
+                                pass
                     else:
-                        self._effective_idle_start = now_ms - raw_idle_ms
-                
-                self._last_raw_idle_ms = raw_idle_ms
-                idle_ms = now_ms - self._effective_idle_start
-                
-                new_afk_state = (idle_ms > self._afk_timeout_ms)
-                if new_afk_state != self._is_afk:
-                    self._is_afk = new_afk_state
-                    self._afk_toggled_time = now_ms
-                    logger.info(f"AFK State changed to: {self._is_afk} (idle: {idle_ms}ms)")
-                    rgb_pref = self.user_preferences.get_preference("rgb_enabled")
-                    target = 1 if (rgb_pref and not self._is_afk) else 0
-                    try:
-                        if self.steelseries_api.set_lighting(bool(target)):
-                            self._last_lighting_state = target
+                        # User is currently in AFK:
+                        if not self._afk_settled:
+                            # Allow 1.5s for hardware/driver transitions upon entering AFK to settle
+                            if (now_ms - self._afk_toggled_time) >= 1500:
+                                self._afk_settled = True
+                                self._afk_settled_time = now_ms
+                                self._afk_baseline_input_tick = last_input_tick
+                                self._afk_baseline_cursor_pos = cur_pos
                         else:
-                            self._last_lighting_state = None
-                    except Exception as e:
-                        self._last_lighting_state = None
-                        logger.debug(f"Failed to set lighting state: {e}")
+                            # Once settled, ANY fresh mouse movement, click, or keypress wakes from AFK
+                            if (
+                                last_input_tick != self._afk_baseline_input_tick
+                                or idle_ms < 1000
+                                or self._last_hook_input_ms > self._afk_settled_time
+                                or self._last_cursor_move_ms > self._afk_settled_time
+                                or (cur_pos != self._afk_baseline_cursor_pos and cur_pos != (0, 0))
+                            ):
+                                self._is_afk = False
+                                self._afk_toggled_time = now_ms
+                                self._afk_settled = False
+                                self._last_sent_frame = None
+                                logger.info("AFK State changed to: False (woken by user input)")
+                                self._sync_lighting_state()
             else:
                 if self._is_afk:
                     self._is_afk = False
                     self._afk_toggled_time = now_ms
-                    logger.info("AFK State changed to: False (idle reset)")
-                    rgb_pref = self.user_preferences.get_preference("rgb_enabled")
-                    target = 1 if rgb_pref else 0
-                    try:
-                        if self.steelseries_api.set_lighting(bool(target)):
-                            self._last_lighting_state = target
-                        else:
-                            self._last_lighting_state = None
-                    except Exception as e:
-                        self._last_lighting_state = None
-                        logger.debug(f"Failed to set lighting state: {e}")
+                    self._afk_settled = False
+                    self._last_sent_frame = None
+                    logger.info("AFK State changed to: False (afk_enabled disabled)")
+                    self._sync_lighting_state()
 
             frame_data = None
 
             if self._is_afk:
-                # AFK: Blank screen
+                # AFK: Blank screen (all 640 bytes = 0x00)
                 frame_data = [0] * 640
             # Calculator overlay takes priority over everything when active
             elif self._calculator_active:
                 img = self.calculator.get_image()
                 frame_data = convert_to_bitmap(img)
-            # Hardware monitor overlay > volume overlay > everything
-            elif self.display_hw_monitor or self.hardware_monitor.should_display() or self.hardware_monitor.is_game_running():
-                img = self.hardware_monitor.get_image()
-                frame_data = convert_to_bitmap(img)
-            # volume overlay > everything else
+            # Volume & mic mute overlay > hardware monitor > everything else
             elif self.volume_overlay.should_display():
                 img = self.volume_overlay.get_image()
+                frame_data = convert_to_bitmap(img)
+            # Hardware monitor overlay
+            elif self.display_hw_monitor or self.hardware_monitor.should_display() or self.hardware_monitor.is_game_running():
+                img = self.hardware_monitor.get_image()
                 frame_data = convert_to_bitmap(img)
             # Weather hotkey overlay
             elif hasattr(self, "weather") and self._weather_active_time > 0 and (time() - self._weather_active_time) < int(self.user_preferences.get_preference("weather_display_time")):
@@ -1119,17 +1190,19 @@ class DisplayManager:
                     if self.player.pause_started and (int(time() * 1000) - self.player.pause_started) > self.timer_threshold:
                         self.state = State.SHOW_CLOCK
 
-            # Send if image changed OR every 1 second anyway (to "claim" OLED back from games)
+            # Send if image changed OR periodically (every 1s when active, every 2s when AFK so the
+            # blank [0]*640 frame stays active and prevents GameSense's 60s deinitializer-proc from
+            # resetting the OLED back to the default background image).
             now_sec = time()
             if frame_data is not None:
-                # If AFK, only send the frame ONCE (when it changes). Spamming frames wakes up the OLED and causes flickering.
-                force_resend = (not self._is_afk) and (now_sec - self._last_frame_sent_time > 1.0)
+                resend_interval = 2.0 if self._is_afk else 1.0
+                force_resend = (now_sec - self._last_frame_sent_time > resend_interval)
                 if (frame_data != self._last_sent_frame) or force_resend:
                     try:
-                        self.steelseries_api.send_frame(frame_data)
-                        self._last_sent_frame = frame_data
-                        self._last_frame_sent_time = now_sec
-                        self._frame_fail_start = 0  # Reset failure timer on success
+                        if self.steelseries_api.send_frame(frame_data):
+                            self._last_sent_frame = frame_data
+                            self._last_frame_sent_time = now_sec
+                            self._frame_fail_start = 0  # Reset failure timer on success
                     except Exception as e:
                         logger.debug("Frame send failed: %s", e)
                         # Track prolonged failure — if frames fail for 30s+, force re-register
@@ -1143,8 +1216,8 @@ class DisplayManager:
                             except Exception as re:
                                 logger.error("Re-registration failed: %s", re)
 
-            # Heartbeat: keep the game registered (every 30s)
-            if now_sec - self._last_heartbeat_time > 30.0:
+            # Heartbeat: keep the game(s) registered (every 25s)
+            if now_sec - self._last_heartbeat_time > 25.0:
                 self._last_heartbeat_time = now_sec
                 try:
                     self.steelseries_api.heartbeat()
@@ -1344,11 +1417,22 @@ class DisplayManager:
 
     def shutdown(self):
         """Gracefully stop all background threads and clean up resources."""
+        if getattr(self, "_shutdown_done", False):
+            return
+        self._shutdown_done = True
         logger.info("Shutting down DisplayManager...")
         self._running = False
         
         # Fast unhook immediately to prevent mouse freeze
         self.fast_unhook()
+
+        # Stop and remove GameSense games and redeploy native SteelSeries GG configs
+        # so the 60s deinitialize timer never resets Rival 5 to orange after exit.
+        if hasattr(self, "steelseries_api") and self.steelseries_api:
+            try:
+                self.steelseries_api.remove_game()
+            except Exception:
+                pass
 
         # Post a WM_QUIT anyway just to be polite and try to free the thread.
         # It's okay if this deadlocks internally because we already dropped the hooks.
@@ -1463,6 +1547,54 @@ class DisplayManager:
             except Exception:
                 pass
 
+    def _get_clock_mute_status(self):
+        """Return (is_mic_muted, is_deafened) for the Clock left-side widget."""
+        if not hasattr(self, "volume_overlay") or self.volume_overlay is None:
+            return (False, False)
+        vo = self.volume_overlay
+        if vo._discord_connected:
+            deaf = bool(vo._discord_deafened)
+            if vo._mic_override is not None:
+                mute = bool(vo._mic_override)
+            elif vo._discord_muted is not None:
+                mute = bool(vo._discord_muted) or deaf
+            else:
+                mute = bool(vo._last_mic_mute) or deaf
+        else:
+            deaf = bool(vo._last_mute)
+            mute = bool(vo._last_mic_mute)
+        return (mute, deaf)
+
+    def trigger_mock_discord_state(self, toggle_mute=False, toggle_deaf=False):
+        """Toggle or preview mocked Discord voice state (mute / deafen) on the OLED."""
+        cur_mute = (
+            bool(self.volume_overlay._discord_muted)
+            if self.volume_overlay._discord_muted is not None
+            else bool(self.volume_overlay._last_mic_mute)
+        )
+        cur_deaf = bool(self.volume_overlay._discord_deafened)
+        if toggle_mute:
+            cur_mute = not cur_mute
+        if toggle_deaf:
+            cur_deaf = not cur_deaf
+        effective_mute = bool(cur_mute or cur_deaf)
+        now = time()
+        self._last_discord_state = effective_mute
+        self._last_hw_state = effective_mute
+        self._sync_lockout_until = now + 1.2
+        if self._is_afk:
+            self._is_afk = False
+            self._afk_toggled_time = int(now * 1000)
+            self._afk_settled = False
+            self._sync_lighting_state()
+        self.volume_overlay.trigger_mock_discord(muted=cur_mute, deafened=cur_deaf)
+        if self._hid_listener:
+            try:
+                self._hid_listener.set_hardware_mute(effective_mute)
+            except Exception as e:
+                logger.debug("Mock Discord headset sync failed: %s", e)
+        return cur_mute, cur_deaf
+
     def _hotkey_set_discord_mute(self, muted):
         """Apply a mute-hotkey press as ONE transaction against Discord.
 
@@ -1476,7 +1608,9 @@ class DisplayManager:
         Returns True if the command was sent (caller falls back to the system
         mic path when False).
         """
-        if not self._discord_ipc.set_mute(muted):
+        sent_ipc = self._discord_ipc.set_mute(muted)
+        mock_enabled = bool(self.user_preferences.get_preference("discord_mock_enabled"))
+        if not sent_ipc and not mock_enabled:
             return False
 
         now = time()
@@ -1489,6 +1623,9 @@ class DisplayManager:
         # A fresh press supersedes any previous override; it is re-armed below
         # only if Discord refuses this new request.
         self.volume_overlay._mic_override = None
+        if not sent_ipc and mock_enabled:
+            self.volume_overlay._discord_connected = True
+            self.volume_overlay._discord_muted = muted
 
         # The RPC loop's sync path is suppressed for this change, so perform the
         # work it would have done: gate the real Windows capture devices...
@@ -1521,6 +1658,47 @@ class DisplayManager:
 
         while self._running:
             try:
+                mock_enabled = bool(self.user_preferences.get_preference("discord_mock_enabled"))
+                has_client_id = bool(self._discord_ipc.client_id)
+
+                # When Discord Application ID is not configured, run in Mock Discord Mode
+                # (if enabled) so hardware headset mute, mute hotkeys, and OLED icons work
+                # locally without spamming IPC connection attempts.
+                if not has_client_id:
+                    if mock_enabled:
+                        self.volume_overlay._discord_connected = True
+                        if self.volume_overlay._discord_muted is None:
+                            self.volume_overlay._discord_muted = bool(self.volume_overlay._last_mic_mute)
+                        if self.volume_overlay._discord_deafened is None:
+                            self.volume_overlay._discord_deafened = False
+
+                        new_hw_mute = self._hid_listener._last_state if self._hid_listener else None
+                        new_hw_event_ts = self._hid_listener._last_hw_ts if self._hid_listener else 0.0
+                        now = time()
+                        if (
+                            new_hw_mute is not None
+                            and new_hw_event_ts > self._last_hw_event_ts
+                            and new_hw_mute != self._last_hw_state
+                            and now > self._sync_lockout_until
+                        ):
+                            logger.info(f"[MOCK-DISCORD] Hardware button pressed: {self._last_hw_state} -> {new_hw_mute}")
+                            self._last_hotkey_req = None
+                            self.volume_overlay._mic_override = None
+                            self._last_hw_state = new_hw_mute
+                            self._last_discord_state = new_hw_mute
+                            self._last_hw_event_ts = new_hw_event_ts
+                            self._sync_lockout_until = now + 1.0
+                            self.volume_overlay.set_discord_mute(
+                                new_hw_mute,
+                                bool(self.volume_overlay._discord_deafened),
+                                True,
+                            )
+                        sleep(0.25)
+                    else:
+                        self.volume_overlay.set_discord_mute(None, None, False)
+                        sleep(5.0)
+                    continue
+
                 # Try to connect if not already connected
                 if not self._discord_ipc.is_connected:
                     if self._discord_ipc.connect():
@@ -1554,13 +1732,14 @@ class DisplayManager:
                             self._sync_lockout_until = now + 2.0
                             logger.info(f"Discord IPC: Initial state established (Muted={initial_mute}) - Sync Lockout for 2s")
                     else:
-                        # Discord not running — hold state for 10s before clearing
-                        if self._discord_disconnect_ts == 0.0:
-                            self._discord_disconnect_ts = time()
-                        
-                        # If truly gone for 10s, clear display state
-                        if (time() - self._discord_disconnect_ts) > 10.0:
-                             self.volume_overlay.set_discord_mute(None, None, False)
+                        # Discord not running — hold state for 10s before clearing (unless mock mode is enabled)
+                        if mock_enabled:
+                            self.volume_overlay._discord_connected = True
+                        else:
+                            if self._discord_disconnect_ts == 0.0:
+                                self._discord_disconnect_ts = time()
+                            if (time() - self._discord_disconnect_ts) > 10.0:
+                                self.volume_overlay.set_discord_mute(None, None, False)
                         
                         sleep(10)
                         continue
@@ -1571,11 +1750,13 @@ class DisplayManager:
                 # Pipe open but OAuth incomplete: get_voice_settings only
                 # returns a {mute: False} placeholder, which would clobber real
                 # state and make the OLED lie (icon unmuted while the system
-                # mic is muted via the hotkey fallback). Treat as disconnected:
-                # system mic drives display + hotkey, while auth keeps retrying
-                # inside get_voice_settings on every poll.
+                # mic is muted via the hotkey fallback). Treat as disconnected
+                # (unless mock mode is enabled):
                 if voice is not None and not self._discord_ipc._authenticated:
-                    self.volume_overlay.set_discord_mute(None, None, False)
+                    if mock_enabled:
+                        self.volume_overlay._discord_connected = True
+                    else:
+                        self.volume_overlay.set_discord_mute(None, None, False)
                     sleep(1.0)
                     continue
 

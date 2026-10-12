@@ -223,6 +223,8 @@ class HardwareMonitor:
         
         self.show_fps = bool(preferences.get_preference("show_game_fps"))
         self.auto_switch_game = bool(preferences.get_preference("auto_hw_monitor_game"))
+        self._game_detect_ts = 0.0
+        self._game_detect_cached = False
         self.fps_monitor = FPSMonitor()
         if self.show_fps or self.auto_switch_game:
             self.fps_monitor.start()
@@ -254,49 +256,74 @@ class HardwareMonitor:
     def should_display(self) -> bool:
         return (time() - self._last_trigger) < self.timeout
 
-    def is_game_running(self) -> bool:
-        if not self.auto_switch_game:
-            return False
-            
+    def is_fullscreen_game_active(self) -> bool:
+        """
+        Detect whether a fullscreen or borderless-windowed game is currently active
+        in the foreground. Cached for 1.0s to avoid per-frame Win32/psutil overhead.
+        """
+        now = time()
+        if now - self._game_detect_ts < 1.0:
+            return self._game_detect_cached
+
+        self._game_detect_ts = now
+        result = False
         try:
             import ctypes
             import ctypes.wintypes
             import psutil
-            
+
             user32 = ctypes.windll.user32
             hwnd = user32.GetForegroundWindow()
             if not hwnd:
+                self._game_detect_cached = False
                 return False
-                
+
             desktop = user32.GetDesktopWindow()
             shell = user32.GetShellWindow()
             if hwnd == desktop or hwnd == shell:
+                self._game_detect_cached = False
                 return False
-                
+
             pid = ctypes.c_ulong()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            
+
             try:
                 proc = psutil.Process(pid.value)
                 name = proc.name().lower()
-                
-                ignored = [
-                    "explorer.exe", "chrome.exe", "firefox.exe", "msedge.exe", 
-                    "opera.exe", "brave.exe", "discord.exe", "spotify.exe", 
-                    "devenv.exe", "code.exe", "pycharm64.exe", "idea64.exe", 
-                    "obs64.exe", "steam.exe", "epicgameslauncher.exe", 
-                    "ds4windows.exe", "steelseriesgg.exe", "steelseriesengine3.exe",
-                    "searchapp.exe", "applicationframehost.exe", "systemsettings.exe",
-                    "taskmgr.exe", "cmd.exe", "powershell.exe", "windowsterminal.exe",
-                    "notepad.exe", "vlc.exe", "mpc-hc64.exe"
-                ]
+
+                ignored = {
+                    "explorer.exe", "chrome.exe", "firefox.exe", "msedge.exe",
+                    "opera.exe", "brave.exe", "vivaldi.exe", "discord.exe", "spotify.exe",
+                    "devenv.exe", "code.exe", "antigravity.exe", "pycharm64.exe", "idea64.exe",
+                    "obs64.exe", "steam.exe", "steamwebhelper.exe", "epicgameslauncher.exe",
+                    "ds4windows.exe", "steelseriesgg.exe", "steelseriesggclient.exe",
+                    "steelseriesengine.exe", "steelseriesengine3.exe", "steelseries-oled-hub.exe",
+                    "oled-customizer.exe", "searchapp.exe", "searchhost.exe",
+                    "applicationframehost.exe", "systemsettings.exe", "lockapp.exe",
+                    "taskmgr.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+                    "windowsterminal.exe", "notepad.exe", "vlc.exe", "mpc-hc64.exe",
+                    "mpv.exe", "potplayer.exe", "potplayermini64.exe"
+                }
                 if name in ignored:
+                    self._game_detect_cached = False
                     return False
-                    
+
+                # 1. Check Direct3D Exclusive Fullscreen state via Shell32
+                try:
+                    quns_state = ctypes.c_int(0)
+                    if ctypes.windll.shell32.SHQueryUserNotificationState(ctypes.byref(quns_state)) == 0:
+                        # QUNS_RUNNING_D3D_FULL_SCREEN = 3
+                        if quns_state.value == 3:
+                            self._game_detect_cached = True
+                            return True
+                except Exception:
+                    pass
+
+                # 2. Check Fullscreen / Borderless Windowed monitor coverage
                 rect = ctypes.wintypes.RECT()
                 user32.GetWindowRect(hwnd, ctypes.byref(rect))
                 monitor = user32.MonitorFromWindow(hwnd, 2)
-                
+
                 class MONITORINFO(ctypes.Structure):
                     _fields_ = [
                         ("cbSize", ctypes.wintypes.DWORD),
@@ -307,22 +334,28 @@ class HardwareMonitor:
                 mi = MONITORINFO()
                 mi.cbSize = ctypes.sizeof(MONITORINFO)
                 user32.GetMonitorInfoW(monitor, ctypes.byref(mi))
-                
+
                 is_fullscreen = (rect.left <= mi.rcMonitor.left and
                                  rect.top <= mi.rcMonitor.top and
                                  rect.right >= mi.rcMonitor.right and
                                  rect.bottom >= mi.rcMonitor.bottom)
-                                 
+
                 if is_fullscreen:
-                    return True
-                    
+                    result = True
+
             except Exception:
                 pass
-                
+
         except Exception:
             pass
-            
-        return False
+
+        self._game_detect_cached = result
+        return result
+
+    def is_game_running(self) -> bool:
+        if not self.auto_switch_game:
+            return False
+        return self.is_fullscreen_game_active()
 
     def _get_lhm_sensor(self, hw_type, sensor_type, name_contains=None):
         selected_gpu = self.preferences.get_preference("selected_gpu") or "Auto"

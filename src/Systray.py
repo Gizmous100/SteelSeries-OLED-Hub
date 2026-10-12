@@ -23,9 +23,9 @@ def exit_app(icon):
     
     logger.info("Exit triggered - starting shutdown sequence")
     
-    # Start a fail-safe "bomb" thread that forces exit after 1.5 seconds
+    # Start a fail-safe "bomb" thread that forces exit after 2.5 seconds
     def force_exit_bomb():
-        time.sleep(1.5)
+        time.sleep(2.5)
         logger.warning("Shutdown timeout reached! Forcing os._exit(0)")
         # Final attempt at lock removal
         lock_file_path = fetch_app_data_path('.lock')
@@ -60,13 +60,6 @@ def exit_app(icon):
             pass
 
     logger.info("Disabled systray")
-    
-    if hasattr(icon, 'manager'):
-        try:
-            icon.manager.shutdown()
-        except Exception:
-            pass
-        
     logger.info("Shutdown sequence finished - exiting process")
     # Hard exit immediately
     os._exit(0)
@@ -519,11 +512,9 @@ def run_systray_async(display_manager):
         Menu.SEPARATOR,
         Item(
             "⚙️ Settings...",
-            lambda icon, item: __import__("threading").Thread(
-                target=__import__("src.SettingsWindow", fromlist=["open_settings"]).open_settings,
-                args=(display_manager.user_preferences, display_manager.update_preferences),
-                daemon=True
-            ).start()
+            lambda icon, item: __import__("src.SettingsWindow", fromlist=["open_settings"]).open_settings(
+                display_manager.user_preferences, display_manager.update_preferences, display_manager
+            )
         ),
         Item(
             get_update_label,

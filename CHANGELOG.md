@@ -8,6 +8,24 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 ---
 
+## [`v1.42`] — 2026-10-12 — AFK Engine Lighting Coexistence, GUI Hardening & Input Safeguards
+### ✨ Fix / Feature Upgrade (`+0.01`)
+- **100% Native SteelSeries GG Engine Config Coexistence (`src/SteelSeriesAPI.py`, `src/DisplayManager.py`):**
+  - Removed legacy static single-color override ("Match Keyboard Color") that hijacked GG illumination. Active usage now grants native GG engine control.
+- **Isolated AFK RGB GameSense Architecture & Rival 5 Orange Fix (`src/SteelSeriesAPI.py`):**
+  - Separated OLED updates (`STEELSERIES_OLED_HUB`) and AFK blackout (`STEELSERIES_AFK_RGB`) into independent games, eliminating engine Lisp VM composite zone caching issues that caused Rival 5 to revert to factory orange.
+- **Apex 7 Hardware `idle_timeout` Override & Triple-Redundant Activity Tracking (`src/SteelSeriesAPI.py`, `src/DisplayManager.py`, `src/utils.py`):**
+  - Automatically overrides keyboard hardware `idle_timeout` to 0 in Engine configs so keyboard LEDs don't cut out during mouse-only desktop activity.
+  - Activity tracking uses `min(win_idle_ms, hook_idle_ms, cursor_idle_ms)` with `GetCursorPos` and low-level mouse/keyboard hooks.
+- **In-Game AFK Suppression & Clock Voice Indicators (`src/HardwareMonitor.py`, `src/Timer.py`, `src/SettingsWindow.py`):**
+  - Added option to disable AFK mode while fullscreen 3D games are active.
+  - Visual mute and deafen status icons displayed on the clock screen (replacing the weather cloud when Discord is muted/deafened).
+  - Mock Discord mode for testing voice status indicators without live Discord IPC.
+- **Settings GUI Stability Hardening (`src/SettingsWindow.py`):**
+  - Resolved Tcl/Tk crash (`tcl86t.dll`) by ensuring safe main-thread GUI dispatch and proper lock release.
+
+---
+
 ## [`v1.41`] — 2026-10-10 — Personalization, AQI Standards, 9-Language OLED & Discord Integration
 ### ✨ Fix / Feature Upgrade (`+0.01`)
 - **Multi-Region / Global Air Quality Index (`AQI`) Standards (`src/Weather.py`, `src/SettingsWindow.py`):**

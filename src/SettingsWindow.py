@@ -6,6 +6,8 @@ Frameless window, sidebar navigation, custom widgets, clean aesthetics.
 import tkinter as tk
 from tkinter import ttk, colorchooser, messagebox
 import os
+import gc
+import queue
 import logging
 import ctypes
 import threading
@@ -38,10 +40,10 @@ class Colors:
     
     DANGER     = "#e74c3c"
 
-FONT_HEADER = ("Segoe UI", 16, "bold")
-FONT_SUBHEADER = ("Segoe UI", 11, "bold")
-FONT_BODY = ("Segoe UI", 10)
-FONT_SMALL = ("Segoe UI", 9)
+FONT_HEADER = ("Segoe UI", 14, "bold")
+FONT_SUBHEADER = ("Segoe UI", 10, "bold")
+FONT_BODY = ("Segoe UI", 9)
+FONT_SMALL = ("Segoe UI", 8)
 
 
 class CustomTitleBar(tk.Frame):
@@ -132,8 +134,19 @@ class ToggleSwitch(tk.Canvas):
         self.width = width
         self.height = height
         self.bind("<Button-1>", self._toggle)
+        try:
+            self.variable.trace_add("write", self._on_var_change)
+        except Exception:
+            pass
         self._draw()
-        
+
+    def _on_var_change(self, *_args):
+        try:
+            if self.winfo_exists():
+                self._draw()
+        except Exception:
+            pass
+
     def _toggle(self, event):
         self.variable.set(not self.variable.get())
         self._draw()
@@ -201,16 +214,17 @@ class SettingsGUI:
         "Alt_L", "Alt_R", "Win_L", "Win_R", "Super_L", "Super_R",
     }
 
-    def __init__(self, prefs, on_save=None):
+    def __init__(self, prefs, on_save=None, manager=None):
         self.prefs = prefs
         self.on_save = on_save
+        self.manager = manager
         self.root = None
         self.hwnd = None
         self._capture_target = None
         self._capture_prev = ""
         self._capture_bind_id = None
         self.vars = {}
-        self.rgb = list(prefs.get_preference("rgb_color") or [0, 212, 170])
+        self.mock_status_var = None
         self.current_page = None
         self.pages = {}
         self.nav_buttons = {}
@@ -220,13 +234,13 @@ class SettingsGUI:
         self.root.title("SteelSeries OLED & RGB Hub")
         self.current_page = None
         self.root.overrideredirect(True)
-        self.root.geometry("640x600")
+        self.root.geometry("680x620")
         self.root.configure(bg=Colors.BG_ROOT)
         
         # Center
         self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() - 640) // 2
-        y = (self.root.winfo_screenheight() - 600) // 2
+        x = (self.root.winfo_screenwidth() - 680) // 2
+        y = (self.root.winfo_screenheight() - 620) // 2
         self.root.geometry(f"+{x}+{y}")
         
         def set_appwindow(root):
@@ -253,6 +267,22 @@ class SettingsGUI:
         try:
             self.root.mainloop()
         finally:
+            try:
+                self.vars.clear()
+                self.pages.clear()
+                self.nav_buttons.clear()
+                self.mock_status_var = None
+                self.update_btn_text = None
+                self.update_btn = None
+                self.discord_btn = None
+                self.log_text = None
+                self.backups_scrollable_frame = None
+                self.content_area = None
+                self.canvas = None
+                self.scrollbar = None
+                self.content_container = None
+            except Exception:
+                pass
             self.root = None
             self.hwnd = None
 
@@ -267,8 +297,8 @@ class SettingsGUI:
         sidebar.pack_propagate(False)
         
         nav_items = [
-            ("General", "⚙️"), ("Display", "📺"), ("Spotify", "🎵"), 
-            ("Hotkeys", "⌨️"), ("Lighting", "🌈"), ("Advanced", "🔧"), 
+            ("General", "⚙️"), ("Display", "📺"), ("AFK Mode", "💤"),
+            ("Multimedia", "🎵"), ("Hotkeys", "⌨️"), ("Advanced", "🔧"), 
             ("Backups", "💾"), ("Logs", "📄")
         ]
         
@@ -286,8 +316,9 @@ class SettingsGUI:
             font=("Segoe UI", 8),
             bg=Colors.SIDEBAR,
             fg=Colors.TEXT_DIM,
-            justify="center"
-        ).pack(fill="x", padx=10, pady=(0, 4))
+            justify="center",
+            wraplength=160,
+        ).pack(fill="x", padx=8, pady=(0, 4))
         
         save_btn = tk.Button(sidebar, text="SAVE", font=FONT_SUBHEADER,
                              bg=Colors.ACCENT_PRIMARY, fg="#000000",
@@ -310,11 +341,16 @@ class SettingsGUI:
         self.canvas.pack(side="left", fill="both", expand=True)
         
         def update_scroll(e=None):
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-            if self.canvas.bbox("all")[3] > self.canvas.winfo_height():
-                self.scrollbar.pack(side="right", fill="y")
+            bbox = self.canvas.bbox("all")
+            if not bbox:
+                return
+            self.canvas.configure(scrollregion=bbox)
+            if bbox[3] > self.canvas.winfo_height():
+                if not self.scrollbar.winfo_ismapped():
+                    self.scrollbar.pack(side="right", fill="y", before=self.canvas)
             else:
-                self.scrollbar.pack_forget()
+                if self.scrollbar.winfo_ismapped():
+                    self.scrollbar.pack_forget()
 
         self.content_area.bind("<Configure>", update_scroll)
         self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfig(self.canvas_window, width=e.width))
@@ -359,7 +395,6 @@ class SettingsGUI:
         self.vars["hotkey_mute"] = tk.StringVar(value=self.prefs.get_preference("hotkey_mute") or "")
         self.vars["hotkey_mute_2"] = tk.StringVar(value=self.prefs.get_preference("hotkey_mute_2") or "")
         self.vars["hotkey_calculator"] = tk.StringVar(value=self.prefs.get_preference("hotkey_calculator") or "")
-        self.vars["rgb_enabled"] = tk.BooleanVar(value=bool(self.prefs.get_preference("rgb_enabled")))
         self.vars["scrollbar_padding"] = tk.StringVar(value=str(self.prefs.get_preference("scrollbar_padding") or "2"))
         self.vars["text_padding_left"] = tk.StringVar(value=str(self.prefs.get_preference("text_padding_left") or "30"))
         self.vars["auto_launch_gg"] = tk.BooleanVar(value=bool(self.prefs.get_preference("auto_launch_gg")))
@@ -372,9 +407,11 @@ class SettingsGUI:
         self.vars["spotify_fetch_delay"] = tk.StringVar(value=self._display_for("spotify_fetch_delay", self.prefs.get_preference("spotify_fetch_delay") or 2))
         self.vars["discord_client_id"] = tk.StringVar(value=self.prefs.get_preference("discord_client_id") or "")
         self.vars["discord_client_secret"] = tk.StringVar(value=self.prefs.get_preference("discord_client_secret") or "")
+        self.vars["discord_mock_enabled"] = tk.BooleanVar(value=bool(self.prefs.get_preference("discord_mock_enabled")))
         self.vars["headset_hid_sync_enabled"] = tk.BooleanVar(value=bool(self.prefs.get_preference("headset_hid_sync_enabled")))
         self.vars["debug_enabled"] = tk.BooleanVar(value=bool(self.prefs.get_preference("debug_enabled")))
         self.vars["weather_enabled"] = tk.BooleanVar(value=bool(self.prefs.get_preference("weather_enabled")))
+        self.vars["show_clock_mute_icons"] = tk.BooleanVar(value=bool(self.prefs.get_preference("show_clock_mute_icons")))
         self.vars["weather_city"] = tk.StringVar(value=self.prefs.get_preference("weather_city") or "Warsaw")
         self.vars["weather_aqi_region"] = tk.StringVar(
             value=self._display_for("weather_aqi_region", self.prefs.get_preference("weather_aqi_region") or "EU")
@@ -382,6 +419,8 @@ class SettingsGUI:
         self.vars["weather_display_time"] = tk.StringVar(value=str(self.prefs.get_preference("weather_display_time") or "5"))
         afk_pref = self.prefs.get_preference("afk_enabled")
         self.vars["afk_enabled"] = tk.BooleanVar(value=afk_pref if afk_pref is not None else True)
+        afk_game_pref = self.prefs.get_preference("afk_disable_in_games")
+        self.vars["afk_disable_in_games"] = tk.BooleanVar(value=afk_game_pref if afk_game_pref is not None else True)
         self.vars["afk_timeout_minutes"] = tk.StringVar(value=str(self.prefs.get_preference("afk_timeout_minutes") or "5"))
 
     def _create_pages(self):
@@ -407,11 +446,14 @@ class SettingsGUI:
         self.update_btn.pack(anchor="w", padx=5)
         tk.Label(
             p_gen,
-            text=f"Version: v{__version__}  |  Author: gizmous  |  Original project: 0z-zy (based on Firewee)",
+            text=f"Version: v{__version__}  •  Author: gizmous\nOriginal project: 0z-zy (based on Firewee)",
             font=FONT_SMALL,
             bg=Colors.CONTENT,
-            fg=Colors.TEXT_DIM
-        ).pack(anchor="w", padx=5, pady=(10, 0))
+            fg=Colors.TEXT_DIM,
+            anchor="w",
+            justify="left",
+            wraplength=420,
+        ).pack(fill="x", anchor="w", padx=5, pady=(10, 0))
         self.pages["General"] = p_gen
 
         # Display
@@ -435,8 +477,14 @@ class SettingsGUI:
         self._dropdown_row(p_disp, "HW Polling Rate", self.vars["hw_polling_interval"], ["500ms", "1s (Default)", "2s", "5s"])
         
         tk.Frame(p_disp, bg=Colors.CONTENT, height=10).pack()
-        self._header(p_disp, "🌦️ Weather Widget")
+        self._header(p_disp, "🌦️ Weather & Clock Left Widget")
         self._toggle_row(p_disp, "Enable Weather (Mini-icon on Clock)", self.vars["weather_enabled"])
+        self._toggle_row(
+            p_disp,
+            "Show Mute / Deafen Icons on Clock (Replaces Weather Cloud)",
+            self.vars["show_clock_mute_icons"],
+            command=self._on_clock_mute_icons_toggle,
+        )
         self._entry_row(p_disp, "City Name", self.vars["weather_city"], width=20)
         self._dropdown_row(
             p_disp,
@@ -446,24 +494,72 @@ class SettingsGUI:
             width=24,
         )
         self._entry_row(p_disp, "Hotkey Display Time (s)", self.vars["weather_display_time"], width=10)
-        
-        tk.Frame(p_disp, bg=Colors.CONTENT, height=10).pack()
-        self._header(p_disp, "💤 Idle / AFK Mode")
-        self._toggle_row(p_disp, "Enable Display & Mouse Dimming on Idle", self.vars["afk_enabled"])
-        self._entry_row(p_disp, "Idle Timeout (minutes)", self.vars["afk_timeout_minutes"], width=10)
-        
         self.pages["Display"] = p_disp
 
-        # Spotify
-        p_spotify = tk.Frame(self.content_area, bg=Colors.CONTENT)
-        self._header(p_spotify, "🎵 Spotify Configuration")
-        self._toggle_row(p_spotify, "Enable Spotify Integration", self.vars["spotify_enabled"])
-        self._entry_row(p_spotify, "Spotify Client ID", self.vars["spotify_client_id"], width=25)
-        self._entry_row(p_spotify, "Spotify Client Secret", self.vars["spotify_client_secret"], width=25, show="*")
-        self._entry_row(p_spotify, "Redirect URI", self.vars["spotify_redirect_uri"], width=25)
-        self._entry_row(p_spotify, "Connection Port", self.vars["local_port"])
-        self._dropdown_row(p_spotify, "Polling Rate", self.vars["spotify_fetch_delay"], ["1s (Fast)", "2s (Default)", "3s", "5s", "10s"])
-        self.pages["Spotify"] = p_spotify
+        # AFK Mode
+        p_afk = tk.Frame(self.content_area, bg=Colors.CONTENT)
+        self._header(p_afk, "💤 Idle / AFK Mode")
+        self._toggle_row(p_afk, "Enable OLED, Keyboard & Mouse Dimming on Idle", self.vars["afk_enabled"])
+        self._toggle_row(p_afk, "Disable Idle / AFK Mode During Games", self.vars["afk_disable_in_games"])
+        self._entry_row(p_afk, "Idle Timeout (minutes)", self.vars["afk_timeout_minutes"], width=10)
+        afk_btn_row = tk.Frame(p_afk, bg=Colors.CONTENT)
+        afk_btn_row.pack(fill="x", pady=(8, 0))
+        tk.Button(
+            afk_btn_row,
+            text="🌙 Test AFK Mode Now (1.5s delay)",
+            bg=Colors.CARD_BG,
+            fg=Colors.TEXT_MAIN,
+            font=FONT_BODY,
+            relief="flat",
+            cursor="hand2",
+            padx=12,
+            pady=4,
+            command=self._test_afk_mode,
+        ).pack(side="left", padx=(5, 0))
+        tk.Label(
+            p_afk,
+            text=(
+                "Turns off the 128×40 OLED screen, keyboard RGB, and mouse RGB after the configured "
+                "inactivity timeout, and automatically restores your active SteelSeries GG profile upon "
+                "any mouse, keyboard, or controller activity."
+            ),
+            font=FONT_SMALL,
+            bg=Colors.CONTENT,
+            fg=Colors.TEXT_DIM,
+            anchor="w",
+            justify="left",
+            wraplength=420,
+        ).pack(fill="x", anchor="w", padx=5, pady=(12, 0))
+        self.pages["AFK Mode"] = p_afk
+
+        # Multimedia (Spotify + Player Layout Adjustments)
+        p_media = tk.Frame(self.content_area, bg=Colors.CONTENT)
+        self._header(p_media, "🎵 Spotify Configuration")
+        self._toggle_row(p_media, "Enable Spotify Integration", self.vars["spotify_enabled"])
+        self._entry_row(p_media, "Spotify Client ID", self.vars["spotify_client_id"], width=25)
+        self._entry_row(p_media, "Spotify Client Secret", self.vars["spotify_client_secret"], width=25, show="*")
+        self._entry_row(p_media, "Redirect URI", self.vars["spotify_redirect_uri"], width=25)
+        self._entry_row(p_media, "Connection Port", self.vars["local_port"])
+        self._dropdown_row(p_media, "Polling Rate", self.vars["spotify_fetch_delay"], ["1s (Fast)", "2s (Default)", "3s", "5s", "10s"])
+        tk.Frame(p_media, bg=Colors.CONTENT, height=12).pack()
+        self._header(p_media, "📐 Player Layout Adjustments")
+        self._entry_row(p_media, "Scrollbar Margin (px)", self.vars["scrollbar_padding"])
+        self._entry_row(p_media, "Text Indentation (px)", self.vars["text_padding_left"])
+        tk.Label(
+            p_media,
+            text=(
+                "Applies to the Standard music player layout: Scrollbar Margin adjusts horizontal "
+                "padding of the bottom progress bar (default: 2 px); Text Indentation adjusts the left "
+                "offset of track title & artist next to the media icon (default: 30 px)."
+            ),
+            font=FONT_SMALL,
+            bg=Colors.CONTENT,
+            fg=Colors.TEXT_DIM,
+            anchor="w",
+            justify="left",
+            wraplength=420,
+        ).pack(fill="x", anchor="w", padx=5, pady=(6, 0))
+        self.pages["Multimedia"] = p_media
 
         # Hotkeys
         p_hot = tk.Frame(self.content_area, bg=Colors.CONTENT)
@@ -477,23 +573,57 @@ class SettingsGUI:
         self._hotkey_row(p_hot, "Toggle Calculator", self.vars["hotkey_calculator"])
         self.pages["Hotkeys"] = p_hot
 
-        # Lighting
-        p_rgb = tk.Frame(self.content_area, bg=Colors.CONTENT)
-        self._header(p_rgb, "🌈 Ambiance Lighting")
-        self._toggle_row(p_rgb, "Match Keyboard Color", self.vars["rgb_enabled"])
-        self._color_picker_row(p_rgb)
-        self.pages["Lighting"] = p_rgb
-
         # Advanced
         p_adv = tk.Frame(self.content_area, bg=Colors.CONTENT)
-        self._header(p_adv, "🔧 Layout Adjustments")
-        self._entry_row(p_adv, "Scrollbar Margin (px)", self.vars["scrollbar_padding"])
-        self._entry_row(p_adv, "Text Indentation (px)", self.vars["text_padding_left"])
+        self._header(p_adv, "🔧 System & Diagnostics")
         self._toggle_row(p_adv, "Auto-Launch SteelSeries GG", self.vars["auto_launch_gg"])
-        tk.Frame(p_adv, bg=Colors.CONTENT, height=10).pack()
-        self._header(p_adv, "🎙️ Discord & Diagnostics")
         self._toggle_row(p_adv, "Enable Headset HID Sync", self.vars["headset_hid_sync_enabled"])
         self._toggle_row(p_adv, "Enable Diagnostic Debug Logging", self.vars["debug_enabled"], command=self._on_debug_toggle)
+        tk.Frame(p_adv, bg=Colors.CONTENT, height=10).pack()
+        self._header(p_adv, "🎙️ Discord Voice & Mute Icons")
+        self._toggle_row(p_adv, "Mock Discord Mode (Local Mute Icons without OAuth)", self.vars["discord_mock_enabled"])
+        self._toggle_row(
+            p_adv,
+            "Show Mute / Deafen Icons on Clock (Replaces Weather Cloud)",
+            self.vars["show_clock_mute_icons"],
+            command=self._on_clock_mute_icons_toggle,
+        )
+        mock_btn_row = tk.Frame(p_adv, bg=Colors.CONTENT)
+        mock_btn_row.pack(fill="x", pady=(4, 4))
+        tk.Button(
+            mock_btn_row,
+            text="🎤 Test Mic Mute on OLED",
+            bg=Colors.CARD_BG,
+            fg=Colors.TEXT_MAIN,
+            font=FONT_BODY,
+            relief="flat",
+            cursor="hand2",
+            padx=12,
+            pady=4,
+            command=self._test_mock_discord_mute,
+        ).pack(side="left", padx=(0, 6))
+        tk.Button(
+            mock_btn_row,
+            text="🔇 Test Deafen on OLED",
+            bg=Colors.CARD_BG,
+            fg=Colors.TEXT_MAIN,
+            font=FONT_BODY,
+            relief="flat",
+            cursor="hand2",
+            padx=12,
+            pady=4,
+            command=self._test_mock_discord_deaf,
+        ).pack(side="left", padx=6)
+        self.mock_status_var = tk.StringVar(value=self._format_mock_status())
+        tk.Label(
+            p_adv,
+            textvariable=self.mock_status_var,
+            font=FONT_SMALL,
+            bg=Colors.CONTENT,
+            fg=Colors.ACCENT_PRIMARY,
+            anchor="w",
+            justify="left",
+        ).pack(fill="x", anchor="w", padx=5, pady=(2, 8))
         self._entry_row(p_adv, "Discord App ID", self.vars["discord_client_id"], width=25)
         self._entry_row(p_adv, "Discord Client Secret", self.vars["discord_client_secret"], width=25, show="*")
         self._entry_row(p_adv, "Discord Port", self.vars["discord_local_port"], width=25)
@@ -549,6 +679,62 @@ class SettingsGUI:
         from src import ProfileBackup
         if messagebox.askyesno("Delete", "Delete backup?", parent=self.root):
             if ProfileBackup.delete_backup(path): self._refresh_backups_list()
+
+    def _on_clock_mute_icons_toggle(self):
+        enabled = bool(self.vars["show_clock_mute_icons"].get())
+        if self.manager and hasattr(self.manager, "timer"):
+            self.manager.timer.show_clock_mute_icons = enabled
+        if self.prefs:
+            self.prefs.preferences["show_clock_mute_icons"] = enabled
+            self.prefs.save_preferences()
+
+    def _format_mock_status(self, muted=None, deafened=None) -> str:
+        if muted is None or deafened is None:
+            if self.manager and hasattr(self.manager, "volume_overlay"):
+                vo = self.manager.volume_overlay
+                muted = bool(vo._discord_muted) if vo._discord_muted is not None else bool(vo._last_mic_mute)
+                deafened = bool(vo._discord_deafened)
+            else:
+                muted = False
+                deafened = False
+        mic_label = "Muted (mic_off)" if (muted or deafened) else "Active (mic_on)"
+        deaf_label = "Deafened (speaker_mute)" if deafened else "Normal (speaker_on)"
+        return f"Current OLED Preview: Mic = {mic_label}  •  Speaker = {deaf_label}"
+
+    def _test_mock_discord_mute(self):
+        if self.manager and hasattr(self.manager, "trigger_mock_discord_state"):
+            def _worker():
+                try:
+                    muted, deaf = self.manager.trigger_mock_discord_state(toggle_mute=True, toggle_deaf=False)
+                    root = self.root
+                    status_var = self.mock_status_var
+                    if root is not None and status_var is not None:
+                        root.after(0, lambda: status_var.set(self._format_mock_status(muted, deaf)) if self.mock_status_var is not None else None)
+                except Exception as e:
+                    logger.error(f"Mock Discord mute test failed: {e}")
+            threading.Thread(target=_worker, daemon=True).start()
+
+    def _test_mock_discord_deaf(self):
+        if self.manager and hasattr(self.manager, "trigger_mock_discord_state"):
+            def _worker():
+                try:
+                    muted, deaf = self.manager.trigger_mock_discord_state(toggle_mute=False, toggle_deaf=True)
+                    root = self.root
+                    status_var = self.mock_status_var
+                    if root is not None and status_var is not None:
+                        root.after(0, lambda: status_var.set(self._format_mock_status(muted, deaf)) if self.mock_status_var is not None else None)
+                except Exception as e:
+                    logger.error(f"Mock Discord deafen test failed: {e}")
+            threading.Thread(target=_worker, daemon=True).start()
+
+    def _test_afk_mode(self):
+        if self.manager and hasattr(self.manager, "trigger_afk_test"):
+            def _worker():
+                try:
+                    self.manager.trigger_afk_test()
+                except Exception as e:
+                    logger.error(f"AFK test failed: {e}")
+            threading.Thread(target=_worker, daemon=True).start()
 
     def _get_discord_redirect_uri(self) -> str:
         raw_port = str(self.vars["discord_local_port"].get() or "8888").strip()
@@ -642,9 +828,13 @@ class SettingsGUI:
 
     def _switch_page(self, name):
         for p in self.pages.values(): p.pack_forget()
-        self.pages[name].pack(fill="both", expand=True, padx=30, pady=20)
+        self.pages[name].pack(fill="both", expand=True, padx=20, pady=18)
         for n, btn in self.nav_buttons.items(): btn.set_selected(n == name)
         self.current_page = name
+        try:
+            self.canvas.yview_moveto(0)
+        except Exception:
+            pass
         if name == "Logs": self._refresh_logs()
 
     def _refresh_logs(self):
@@ -662,30 +852,59 @@ class SettingsGUI:
     def _exclusive_toggle(self, k1, k2):
         if self.vars[k1].get(): self.vars[k2].set(False)
 
-    def _header(self, p, t): tk.Label(p, text=t, font=FONT_HEADER, fg=Colors.TEXT_MAIN, bg=Colors.CONTENT).pack(anchor="w", pady=(0, 20))
+    def _header(self, p, t):
+        tk.Label(p, text=t, font=FONT_HEADER, fg=Colors.TEXT_MAIN, bg=Colors.CONTENT).pack(anchor="w", pady=(0, 14))
+
     def _row_frame(self, p):
-        f = tk.Frame(p, bg=Colors.CARD_BG, height=45); f.pack(fill="x", pady=5); f.pack_propagate(False); return f
+        f = tk.Frame(p, bg=Colors.CARD_BG, height=44)
+        f.pack(fill="x", pady=4)
+        f.pack_propagate(False)
+        return f
+
     def _toggle_row(self, p, l, v, command=None):
-        f = self._row_frame(p); tk.Label(f, text=l, font=FONT_BODY, fg=Colors.TEXT_MAIN, bg=Colors.CARD_BG).pack(side="left", padx=15)
-        ToggleSwitch(f, v, command=command).pack(side="right", padx=15)
+        f = self._row_frame(p)
+        ToggleSwitch(f, v, command=command).pack(side="right", padx=(8, 15))
+        tk.Label(
+            f, text=l, font=FONT_BODY, fg=Colors.TEXT_MAIN, bg=Colors.CARD_BG,
+            anchor="w", justify="left"
+        ).pack(side="left", padx=(15, 4), fill="x", expand=True)
+
     def _dropdown_row(self, p, l, v, opts, width=15):
-        f = self._row_frame(p); tk.Label(f, text=l, font=FONT_BODY, fg=Colors.TEXT_MAIN, bg=Colors.CARD_BG).pack(side="left", padx=15)
-        cb = ttk.Combobox(f, textvariable=v, values=opts, state="readonly", width=width); cb.pack(side="right", padx=15)
+        f = self._row_frame(p)
+        cb = ttk.Combobox(f, textvariable=v, values=opts, state="readonly", width=width)
+        cb.pack(side="right", padx=(8, 15))
+        tk.Label(
+            f, text=l, font=FONT_BODY, fg=Colors.TEXT_MAIN, bg=Colors.CARD_BG,
+            anchor="w", justify="left"
+        ).pack(side="left", padx=(15, 4), fill="x", expand=True)
+
     def _entry_row(self, p, l, v, width=10, show=None):
-        f = self._row_frame(p); tk.Label(f, text=l, font=FONT_BODY, fg=Colors.TEXT_MAIN, bg=Colors.CARD_BG).pack(side="left", padx=15)
-        tk.Entry(f, textvariable=v, bg=Colors.INPUT_BG, fg=Colors.INPUT_FG, relief="flat", width=width, show=show).pack(side="right", padx=15)
+        f = self._row_frame(p)
+        tk.Entry(
+            f, textvariable=v, bg=Colors.INPUT_BG, fg=Colors.INPUT_FG,
+            relief="flat", width=width, show=show
+        ).pack(side="right", padx=(8, 15))
+        tk.Label(
+            f, text=l, font=FONT_BODY, fg=Colors.TEXT_MAIN, bg=Colors.CARD_BG,
+            anchor="w", justify="left"
+        ).pack(side="left", padx=(15, 4), fill="x", expand=True)
+
     def _hotkey_row(self, p, l, v):
-        f = self._row_frame(p); tk.Label(f, text=l, font=FONT_BODY, fg=Colors.TEXT_MAIN, bg=Colors.CARD_BG).pack(side="left", padx=15)
+        f = self._row_frame(p)
 
         def small_btn(txt, cmd):
             return tk.Button(f, text=txt, command=cmd, bg=Colors.INPUT_BG, fg=Colors.TEXT_MAIN,
-                             relief="flat", cursor="hand2", padx=6)
+                             font=FONT_SMALL, relief="flat", cursor="hand2", padx=6)
 
         small_btn("✕", lambda: self._assign_hotkey(v, "")).pack(side="right", padx=(0, 15))
         small_btn("M5", lambda: self._assign_hotkey(v, "Key.mouse_5")).pack(side="right", padx=2)
         small_btn("M4", lambda: self._assign_hotkey(v, "Key.mouse_4")).pack(side="right", padx=2)
         small_btn("Set", lambda: self._begin_hotkey_capture(v)).pack(side="right", padx=6)
-        tk.Label(f, textvariable=v, fg=Colors.TEXT_DIM, bg=Colors.CARD_BG).pack(side="right", padx=10)
+        tk.Label(f, textvariable=v, font=FONT_SMALL, fg=Colors.TEXT_DIM, bg=Colors.CARD_BG).pack(side="right", padx=8)
+        tk.Label(
+            f, text=l, font=FONT_BODY, fg=Colors.TEXT_MAIN, bg=Colors.CARD_BG,
+            anchor="w", justify="left"
+        ).pack(side="left", padx=(15, 4), fill="x", expand=True)
 
     def _assign_hotkey(self, var, value):
         """Directly assign a hotkey value, disarming any pending capture first
@@ -744,19 +963,17 @@ class SettingsGUI:
         var.set(mapped if mapped else self._capture_prev)
         return "break"
 
-    def _color_picker_row(self, p):
-        f = self._row_frame(p); tk.Label(f, text="Color", bg=Colors.CARD_BG, fg=Colors.TEXT_MAIN).pack(side="left", padx=15)
-        tk.Button(f, text="PICK", command=lambda: self._on_color_pick(f)).pack(side="right", padx=15)
-
-    def _on_color_pick(self, f):
-        c = colorchooser.askcolor()
-        if c[1]: self.rgb = [int(x) for x in c[0]]
-
     def _check_updates(self):
         def worker():
             available, latest = is_update_available()
-            if available: self.update_btn_text.set(f"Update to v{latest}")
-            else: self.update_btn_text.set("Up to Date")
+            label = f"Update to v{latest}" if available else "Up to Date"
+            root = self.root
+            btn_var = self.update_btn_text
+            if root is not None and btn_var is not None:
+                try:
+                    root.after(0, lambda: btn_var.set(label) if self.update_btn_text is not None else None)
+                except Exception:
+                    pass
         threading.Thread(target=worker, daemon=True).start()
 
     def _save_all(self):
@@ -773,9 +990,16 @@ class SettingsGUI:
                     val = self.DROPDOWN_MAPS[k].get(val, val)
 
                 # Integer fields
-                if k in ["scrollbar_padding", "text_padding_left", "local_port", "discord_local_port", "spotify_fetch_delay", "hw_polling_interval", "weather_display_time", "afk_timeout_minutes"]:
+                if k in ["scrollbar_padding", "text_padding_left", "local_port", "discord_local_port", "spotify_fetch_delay", "hw_polling_interval", "weather_display_time"]:
                     try: val = int(val)
                     except: val = UserPreferences.DEFAULT.get(k, 0)
+
+                if k == "afk_timeout_minutes":
+                    try:
+                        fval = max(float(str(val).replace(",", ".")), 0.1)
+                        val = int(fval) if fval.is_integer() else round(fval, 2)
+                    except Exception:
+                        val = UserPreferences.DEFAULT.get(k, 5)
                 
                 # Special mapping for date format checkbox
                 if k == "date_format":
@@ -784,41 +1008,68 @@ class SettingsGUI:
                 self.prefs.preferences[k] = val
             
             self.prefs.preferences["use_polish_days"] = (self.prefs.preferences.get("oled_language") == "PL")
-            self.prefs.preferences["rgb_color"] = self.rgb
+            self.prefs.preferences["rgb_enabled"] = False
             self.prefs.save_preferences()
-            set_startup(self.vars["run_on_start"].get())
-            
-            messagebox.showinfo("Success", "Settings saved!")
+
+            want_startup = bool(self.vars["run_on_start"].get())
+            if want_startup != bool(is_startup_enabled()):
+                set_startup(want_startup)
             
             if self.on_save:
-                import threading
                 def safe_on_save():
                     try: self.on_save()
                     except Exception as e: logger.error(f"on_save failed: {e}")
                 threading.Thread(target=safe_on_save, daemon=True).start()
+
+            messagebox.showinfo("Success", "Settings saved!", parent=self.root)
                 
         except Exception as e:
             logger.error(f"Save failed: {e}")
-            messagebox.showerror("Error", f"Failed to save: {e}")
-        finally:
-            try:
-                self.root.destroy()
-            except Exception:
-                pass
+            messagebox.showerror("Error", f"Failed to save: {e}", parent=self.root)
 
     def _on_debug_toggle(self):
         from src.debug_utils import toggle_debug_logging
         toggle_debug_logging(self.vars["debug_enabled"].get())
 
-# Only one settings window may exist: tkinter is not thread-safe, and each
-# tray click spawns a fresh thread. If a window is already open we focus it
-# via Win32 (safe from any thread) instead of touching Tk cross-thread.
+# Tcl/Tk (tcl86t.dll) requires that all Tk interpreters and Variable/TkappObject
+# finalizers (Tcl_AsyncDelete) run on the exact same OS thread that created them.
+# Spawning disposable threads per tray click caused cyclic GC on the Main Thread
+# to finalize dead threads' Tk objects and trigger Tcl_Panic (0x80000003).
+# A single persistent daemon thread owns all SettingsGUI lifecycles and runs
+# gc.collect() immediately upon window close.
 _open_gui_lock = threading.Lock()
 _open_gui = None
+_settings_request_queue = queue.Queue(maxsize=1)
+_settings_worker_started = False
 
 
-def open_settings(prefs, callback=None):
+def _settings_worker_loop():
     global _open_gui
+    while True:
+        prefs, callback, manager = _settings_request_queue.get()
+        gui = None
+        try:
+            with _open_gui_lock:
+                gui = SettingsGUI(prefs, callback, manager)
+                _open_gui = gui
+            gui.show()
+        except Exception:
+            logger.exception("Settings window crashed")
+        finally:
+            with _open_gui_lock:
+                if _open_gui is gui:
+                    _open_gui = None
+            gui = None
+            # Force cyclic GC on THIS persistent Tk thread so Tkapp_Dealloc /
+            # Tcl_AsyncDelete never gets invoked from another thread during GC.
+            try:
+                gc.collect()
+            except Exception:
+                pass
+
+
+def open_settings(prefs, callback=None, manager=None):
+    global _settings_worker_started
     with _open_gui_lock:
         if _open_gui is not None:
             hwnd = _open_gui.hwnd
@@ -829,13 +1080,14 @@ def open_settings(prefs, callback=None):
                 except Exception:
                     pass
             return
-        gui = SettingsGUI(prefs, callback)
-        _open_gui = gui
+        if not _settings_worker_started:
+            _settings_worker_started = True
+            threading.Thread(
+                target=_settings_worker_loop,
+                daemon=True,
+                name="Settings-UI-Thread",
+            ).start()
     try:
-        gui.show()
-    except Exception:
-        logger.exception("Settings window crashed")
-    finally:
-        with _open_gui_lock:
-            if _open_gui is gui:
-                _open_gui = None
+        _settings_request_queue.put_nowait((prefs, callback, manager))
+    except queue.Full:
+        pass

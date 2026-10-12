@@ -279,3 +279,12 @@ def get_idle_time_ms() -> int:
         return (ctypes.windll.kernel32.GetTickCount() - lii.dwTime) & 0xFFFFFFFF
     return 0
 
+def get_last_input_info() -> tuple[int, int]:
+    """Returns (last_input_tick, idle_time_ms)."""
+    lii = LASTINPUTINFO()
+    lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
+    if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
+        idle_ms = (ctypes.windll.kernel32.GetTickCount() - lii.dwTime) & 0xFFFFFFFF
+        return (int(lii.dwTime), int(idle_ms))
+    return (0, 0)
+

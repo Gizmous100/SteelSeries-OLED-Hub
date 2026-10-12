@@ -4,7 +4,18 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 **Project Versioning Policy:**
 - **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.54`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.55`).
+
+---
+
+## [`v1.55`] — 2026-10-12 — Mouse RGB AFK Blackout & Reliable Input Wake Fix
+### ✨ Bug Fixes & Improvements (`+0.01`)
+- **Mouse RGB AFK Blackout Fix (`src/SteelSeriesAPI.py`):**
+  - Removed premature `send_data("/stop_game")` inside `_bind_lighting_event()` which previously stopped the GameSense game right after binding, caused SteelSeries Engine to immediately restore mouse illumination, and triggered phantom Windows input events.
+  - Expanded `lighting_handlers` to cover all mouse illumination zones: added `rgb-10-zone` (`all` and `one`..`ten`), `mouse` (`all`, `wheel`, `logo`), `rgb-zoned-device` (`all` and `one`..`ten`), and generic `rgb-1-zone` through `rgb-12-zone` so multi-zone mice (such as **Rival 5**) completely black out alongside keyboard RGB and the OLED screen.
+- **Reliable AFK Idle & Mouse Wake Detection (`src/DisplayManager.py`, `src/utils.py`):**
+  - Replaced flawed `_effective_idle_start` and relative `raw_idle_ms < _last_raw_idle_ms - 1000` logic (which failed to detect mouse wakeups if `_last_raw_idle_ms` was 0 and falsely triggered AFK during active continuous typing/moving).
+  - Implemented direct Windows `GetLastInputInfo` tick tracking (`get_last_input_info()` returning `(dwTime, idle_ms)`) with a 1.5-second settle window upon entering AFK. Any subsequent mouse movement, click, or keystroke updates `dwTime` and immediately wakes the system up, turning the OLED display back on and restoring native SteelSeries GG illumination profiles on both keyboard and mouse.
 
 ---
 

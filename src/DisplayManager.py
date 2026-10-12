@@ -18,7 +18,7 @@ from src.HardwareMonitor import HardwareMonitor
 from src.ExtensionReceiver import ExtensionReceiver
 from src.DiscordRPC import DiscordIPC
 from src.HIDListener import HIDListener
-from src.utils import is_process_running, find_steelseries_gg_path, launch_process, get_idle_time_ms
+from src.utils import is_process_running, find_steelseries_gg_path, launch_process, get_idle_time_ms, get_last_input_info
 import asyncio
 
 logger = logging.getLogger("OLED Customizer")
@@ -192,9 +192,9 @@ class DisplayManager:
         
         self._is_afk = False
         self._afk_timeout_ms = 5 * 60 * 1000  # 5 minutes by default
-        self._effective_idle_start = int(time() * 1000)
-        self._last_raw_idle_ms = 0
         self._afk_toggled_time = 0
+        self._afk_settled = False
+        self._afk_baseline_input_tick = 0
 
         # Spotify worker thread (single persistent thread instead of spawning new ones)
         self._spotify_queue = Queue(maxsize=1)
@@ -1035,38 +1035,45 @@ class DisplayManager:
                     and self.hardware_monitor.is_fullscreen_game_active()
                 )
                 if game_blocks_afk:
-                    self._effective_idle_start = now_ms
-                    self._last_raw_idle_ms = 0
                     if self._is_afk:
                         self._is_afk = False
                         self._afk_toggled_time = now_ms
+                        self._afk_settled = False
                         logger.info("AFK State changed to: False (suppressed by active game)")
                         self._sync_lighting_state()
                 else:
-                    raw_idle_ms = get_idle_time_ms()
-                    
-                    # Check if input occurred (raw idle time dropped)
-                    if raw_idle_ms < self._last_raw_idle_ms - 1000:
-                        # Ignore inputs that happen within 3 seconds of toggling AFK (phantom inputs from SteelSeries API)
-                        if (now_ms - self._afk_toggled_time) < 3000:
-                            logger.debug("Ignoring phantom input triggered by AFK state change")
+                    last_input_tick, idle_ms = get_last_input_info()
+
+                    if not self._is_afk:
+                        # User is currently active: enter AFK when idle time exceeds timeout
+                        if idle_ms >= self._afk_timeout_ms:
+                            self._is_afk = True
+                            self._afk_toggled_time = now_ms
+                            self._afk_settled = False
+                            self._afk_baseline_input_tick = last_input_tick
+                            logger.info(f"AFK State changed to: True (idle: {idle_ms}ms >= {self._afk_timeout_ms}ms)")
+                            self._sync_lighting_state()
+                    else:
+                        # User is currently in AFK:
+                        if not self._afk_settled:
+                            # Allow 1.5s for hardware/driver transitions upon entering AFK to settle
+                            if (now_ms - self._afk_toggled_time) >= 1500:
+                                self._afk_settled = True
+                                self._afk_baseline_input_tick = last_input_tick
                         else:
-                            self._effective_idle_start = now_ms - raw_idle_ms
-                    
-                    self._last_raw_idle_ms = raw_idle_ms
-                    idle_ms = now_ms - self._effective_idle_start
-                    
-                    new_afk_state = (idle_ms > self._afk_timeout_ms)
-                    if new_afk_state != self._is_afk:
-                        self._is_afk = new_afk_state
-                        self._afk_toggled_time = now_ms
-                        logger.info(f"AFK State changed to: {self._is_afk} (idle: {idle_ms}ms)")
-                        self._sync_lighting_state()
+                            # Once settled, ANY fresh mouse movement, click, or keypress updates last_input_tick
+                            if last_input_tick != self._afk_baseline_input_tick or idle_ms < 1000:
+                                self._is_afk = False
+                                self._afk_toggled_time = now_ms
+                                self._afk_settled = False
+                                logger.info("AFK State changed to: False (woken by user input)")
+                                self._sync_lighting_state()
             else:
                 if self._is_afk:
                     self._is_afk = False
                     self._afk_toggled_time = now_ms
-                    logger.info("AFK State changed to: False (idle reset)")
+                    self._afk_settled = False
+                    logger.info("AFK State changed to: False (afk_enabled disabled)")
                     self._sync_lighting_state()
 
             frame_data = None
@@ -1493,7 +1500,7 @@ class DisplayManager:
         if self._is_afk:
             self._is_afk = False
             self._afk_toggled_time = int(now * 1000)
-            self._effective_idle_start = int(now * 1000)
+            self._afk_settled = False
             self._sync_lighting_state()
         self.volume_overlay.trigger_mock_discord(muted=cur_mute, deafened=cur_deaf)
         if self._hid_listener:

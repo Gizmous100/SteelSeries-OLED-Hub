@@ -167,23 +167,67 @@ class SteelSeriesAPI:
     def _bind_lighting_event(self) -> bool:
         """
         Bind the LIGHTING event for Keyboard and Mouse RGB zones during AFK blackout:
-        - Value 0 = AFK blackout [0, 0, 0]
+        - Value 0 = AFK blackout [0, 0, 0] across all keyboard and mouse illumination zones.
         """
         color_ranges = [
             {"low": 0, "high": 1, "color": {"red": 0, "green": 0, "blue": 0}}
         ]
 
         lighting_handlers = [
+            # Keyboard full-device specifiers
             {
                 "device-type": "rgb-per-key-zones",
                 "zone": "all",
                 "mode": "color",
                 "color": color_ranges
-            }
+            },
+            {
+                "device-type": "keyboard",
+                "zone": "all",
+                "mode": "color",
+                "color": color_ranges
+            },
+            # Mouse full-device specifiers
+            {
+                "device-type": "mouse",
+                "zone": "all",
+                "mode": "color",
+                "color": color_ranges
+            },
+            {
+                "device-type": "mouse",
+                "zone": "wheel",
+                "mode": "color",
+                "color": color_ranges
+            },
+            {
+                "device-type": "mouse",
+                "zone": "logo",
+                "mode": "color",
+                "color": color_ranges
+            },
+            {
+                "device-type": "rgb-10-zone",
+                "zone": "all",
+                "mode": "color",
+                "color": color_ranges
+            },
+            {
+                "device-type": "rgb-zoned-device",
+                "zone": "all",
+                "mode": "color",
+                "color": color_ranges
+            },
         ]
 
-        # Multi-zone RGB devices (e.g. Rival 5 uses rgb-10-zone 'one'..'ten')
+        # Multi-zone mouse specific zones (e.g. Rival 5 10 zones, Rival 600 8 zones, etc.)
         for zone_name in ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"):
+            lighting_handlers.append({
+                "device-type": "rgb-10-zone",
+                "zone": zone_name,
+                "mode": "color",
+                "color": color_ranges
+            })
             lighting_handlers.append({
                 "device-type": "rgb-zoned-device",
                 "zone": zone_name,
@@ -191,11 +235,10 @@ class SteelSeriesAPI:
                 "color": color_ranges
             })
 
-        # Legacy 2-zone mouse specifiers
-        for mouse_zone in ("wheel", "logo"):
+        for general_type in ("rgb-1-zone", "rgb-2-zone", "rgb-3-zone", "rgb-5-zone", "rgb-8-zone", "rgb-12-zone"):
             lighting_handlers.append({
-                "device-type": "mouse",
-                "zone": mouse_zone,
+                "device-type": general_type,
+                "zone": "all",
                 "mode": "color",
                 "color": color_ranges
             })
@@ -210,10 +253,6 @@ class SteelSeriesAPI:
         })
         self._lighting_bound = bool(ok)
         if ok:
-            # Wipe GameSense Lisp zones-in-use-cache so the newly bound LIGHTING
-            # zones are detected immediately on the next LIGHTING event.
-            self.send_data("/stop_game", {"game": GAME}, ignore_errors=True)
-            sleep(0.05)
             logger.info("Bound LIGHTING event for AFK blackout (Keyboard + Mouse RGB [0, 0, 0])")
         return bool(ok)
 

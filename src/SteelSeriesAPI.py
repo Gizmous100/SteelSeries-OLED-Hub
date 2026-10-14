@@ -25,6 +25,7 @@ class SteelSeriesAPI:
         ]
         self.address = ""
         self.encrypted_address = ""
+        self.gg_encrypted_address = ""
         
         # Use urllib3 PoolManager directly for maximum performance and minimal object churn.
         # requests.Session creates many heavy objects (Headers, CaseInsensitiveDict, etc.)
@@ -91,6 +92,8 @@ class SteelSeriesAPI:
                     self.address = "http://" + data["address"]
                     enc_addr = data.get("encryptedAddress")
                     self.encrypted_address = ("https://" + enc_addr) if enc_addr else ""
+                    gg_enc_addr = data.get("ggEncryptedAddress")
+                    self.gg_encrypted_address = ("https://" + gg_enc_addr) if gg_enc_addr else ""
 
                 # Clean start: register and bind
                 self._lighting_bound = False
@@ -118,6 +121,7 @@ class SteelSeriesAPI:
             logger.info("Resetting SteelSeries connection...")
             self.address = ""
             self.encrypted_address = ""
+            self.gg_encrypted_address = ""
             self._lighting_bound = False
             self._last_lighting_release_ts = 0.0
             # Limit retries during resets to avoid blocking the main thread forever
@@ -127,81 +131,116 @@ class SteelSeriesAPI:
 
     def _redeploy_engine_active_configs(self):
         """
-        Redeploy the active SteelSeries GG Engine configuration on connected RGB
-        devices via encryptedAddress (/configuration/<id>/forceDeploy).
+        Redeploy active SteelSeries configuration on connected RGB devices.
+        If a SteelSeries GG Loadout (Game profile / Desktop) is active, re-deploys via
+        ggEncryptedAddress (/v1/loadouts/<id>/deploy) so Prism Sync and game profiles
+        restore natively without reverting to onboard defaults.
+        Otherwise falls back to encryptedAddress (/configuration/<id>/forceDeploy).
         Also disables any conflicting onboard hardware idle_timeout (e.g. Apex 7's
-        default 300000ms keyboard-only firmware timer that dims the keyboard even
-        while the user is actively moving the mouse) so AFK blackout is managed
-        uniformly across keyboard, mouse, and OLED by SteelSeries OLED & RGB Hub.
+        default 300000ms keyboard-only firmware timer).
         """
-        if not self.encrypted_address:
+        if not self.encrypted_address and not self.gg_encrypted_address:
             return
         try:
             import ssl
             import urllib.request
             ctx = ssl._create_unverified_context()
-            req = urllib.request.Request(f"{self.encrypted_address}/v1/connectedDevices")
-            with urllib.request.urlopen(req, context=ctx, timeout=1.5) as resp:
-                payload = loads(resp.read().decode("utf-8"))
-            for dev in payload.get("devices", []):
-                if not dev.get("supports_prism_sync") and dev.get("type") not in (0, 1):
-                    continue
-                cfgs = dev.get("configuration_metadata") or []
-                for cfg_meta in cfgs:
-                    cid = cfg_meta.get("id")
-                    if not cid:
-                        continue
-                    try:
-                        get_req = urllib.request.Request(f"{self.encrypted_address}/configuration/{cid}")
-                        with urllib.request.urlopen(get_req, context=ctx, timeout=1.5) as c_resp:
-                            cfg_wrapper = loads(c_resp.read().decode("utf-8"))
-                        cfg_obj = cfg_wrapper.get("configuration") or {}
-                        raw_settings = cfg_obj.get("settings")
-                        if isinstance(raw_settings, str) and "idle_timeout" in raw_settings:
-                            settings_dict = loads(raw_settings)
-                            idle_to = settings_dict.get("idle_timeout")
-                            if isinstance(idle_to, dict) and int(idle_to.get("timeout") or 0) > 0:
-                                prev_to = idle_to.get("timeout")
-                                settings_dict["idle_timeout"] = {"timeout": 0}
-                                cfg_obj["settings"] = dumps(settings_dict)
-                                cfg_obj.pop("undeployedsettings", None)
-                                put_req = urllib.request.Request(
-                                    f"{self.encrypted_address}/configuration/{cid}",
-                                    data=dumps(cfg_obj).encode("utf-8"),
-                                    headers={"Content-Type": "application/json"},
-                                    method="PUT",
-                                )
-                                with urllib.request.urlopen(put_req, context=ctx, timeout=2.0) as _:
-                                    pass
-                                logger.info(
-                                    "Disabled onboard hardware idle_timeout (was %sms) in Engine config '%s' on %s",
-                                    prev_to,
-                                    cfg_meta.get("name"),
-                                    dev.get("name"),
-                                )
-                    except Exception as ie:
-                        logger.debug("Onboard idle_timeout check skipped for %s: %s", cid, ie)
 
-                active_cfg = (
-                    next((c for c in cfgs if c.get("active") == 1 and c.get("last_deployed") == 1), None)
-                    or next((c for c in cfgs if c.get("last_deployed") == 1), None)
-                    or next((c for c in cfgs if c.get("active") == 1), None)
-                )
-                if active_cfg and active_cfg.get("id"):
-                    active_cid = active_cfg["id"]
-                    deploy_req = urllib.request.Request(
-                        f"{self.encrypted_address}/configuration/{active_cid}/forceDeploy",
-                        data=b"",
-                        method="POST",
+            # 1. Sanitize hardware idle_timeout on connected devices
+            if self.encrypted_address:
+                try:
+                    req = urllib.request.Request(f"{self.encrypted_address}/v1/connectedDevices")
+                    with urllib.request.urlopen(req, context=ctx, timeout=1.5) as resp:
+                        payload = loads(resp.read().decode("utf-8"))
+                    for dev in payload.get("devices", []):
+                        if not dev.get("supports_prism_sync") and dev.get("type") not in (0, 1):
+                            continue
+                        cfgs = dev.get("configuration_metadata") or []
+                        for cfg_meta in cfgs:
+                            cid = cfg_meta.get("id")
+                            if not cid:
+                                continue
+                            try:
+                                get_req = urllib.request.Request(f"{self.encrypted_address}/configuration/{cid}")
+                                with urllib.request.urlopen(get_req, context=ctx, timeout=1.5) as c_resp:
+                                    cfg_wrapper = loads(c_resp.read().decode("utf-8"))
+                                cfg_obj = cfg_wrapper.get("configuration") or {}
+                                raw_settings = cfg_obj.get("settings")
+                                if isinstance(raw_settings, str) and "idle_timeout" in raw_settings:
+                                    settings_dict = loads(raw_settings)
+                                    idle_to = settings_dict.get("idle_timeout")
+                                    if isinstance(idle_to, dict) and int(idle_to.get("timeout") or 0) > 0:
+                                        prev_to = idle_to.get("timeout")
+                                        settings_dict["idle_timeout"] = {"timeout": 0}
+                                        cfg_obj["settings"] = dumps(settings_dict)
+                                        cfg_obj.pop("undeployedsettings", None)
+                                        put_req = urllib.request.Request(
+                                            f"{self.encrypted_address}/configuration/{cid}",
+                                            data=dumps(cfg_obj).encode("utf-8"),
+                                            headers={"Content-Type": "application/json"},
+                                            method="PUT",
+                                        )
+                                        with urllib.request.urlopen(put_req, context=ctx, timeout=2.0) as _:
+                                            pass
+                                        logger.info(
+                                            "Disabled onboard hardware idle_timeout (was %sms) in Engine config '%s' on %s",
+                                            prev_to,
+                                            cfg_meta.get("name"),
+                                            dev.get("name"),
+                                        )
+                            except Exception as ie:
+                                logger.debug("Onboard idle_timeout check skipped for %s: %s", cid, ie)
+                except Exception as c_err:
+                    logger.debug("Hardware idle_timeout sanitization failed: %s", c_err)
+
+            # 2. Redeploy active GG Loadout (Game Profile / Desktop) if available
+            deployed_loadout = False
+            if self.gg_encrypted_address:
+                try:
+                    ld_req = urllib.request.Request(f"{self.gg_encrypted_address}/v1/loadouts/active")
+                    with urllib.request.urlopen(ld_req, context=ctx, timeout=1.5) as ld_resp:
+                        ld_payload = loads(ld_resp.read().decode("utf-8"))
+                    active_ld = ld_payload.get("activeLoadout") or {}
+                    ld_id = active_ld.get("id")
+                    if ld_id:
+                        deploy_url = f"{self.gg_encrypted_address}/v1/loadouts/{ld_id}/deploy"
+                        post_req = urllib.request.Request(deploy_url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+                        with urllib.request.urlopen(post_req, context=ctx, timeout=1.5) as _:
+                            pass
+                        logger.info("Redeployed active SteelSeries GG Loadout '%s' (%s)", active_ld.get("name"), ld_id)
+                        deployed_loadout = True
+                except Exception as ld_err:
+                    logger.debug("Active GG loadout deploy check skipped/failed: %s", ld_err)
+
+            # 3. Fallback: If GG loadout deploy was not performed, forceDeploy active configs on Engine devices
+            if not deployed_loadout and self.encrypted_address:
+                req = urllib.request.Request(f"{self.encrypted_address}/v1/connectedDevices")
+                with urllib.request.urlopen(req, context=ctx, timeout=1.5) as resp:
+                    payload = loads(resp.read().decode("utf-8"))
+                for dev in payload.get("devices", []):
+                    if not dev.get("supports_prism_sync") and dev.get("type") not in (0, 1):
+                        continue
+                    cfgs = dev.get("configuration_metadata") or []
+                    active_cfg = (
+                        next((c for c in cfgs if c.get("active") == 1 and c.get("last_deployed") == 1), None)
+                        or next((c for c in cfgs if c.get("last_deployed") == 1), None)
+                        or next((c for c in cfgs if c.get("active") == 1), None)
                     )
-                    with urllib.request.urlopen(deploy_req, context=ctx, timeout=1.5) as _:
-                        pass
-                    logger.debug(
-                        "Redeployed active Engine config '%s' (%s) on %s",
-                        active_cfg.get("name"),
-                        active_cid,
-                        dev.get("name"),
-                    )
+                    if active_cfg and active_cfg.get("id"):
+                        active_cid = active_cfg["id"]
+                        deploy_req = urllib.request.Request(
+                            f"{self.encrypted_address}/configuration/{active_cid}/forceDeploy",
+                            data=b"",
+                            method="POST",
+                        )
+                        with urllib.request.urlopen(deploy_req, context=ctx, timeout=1.5) as _:
+                            pass
+                        logger.debug(
+                            "Redeployed active Engine config '%s' (%s) on %s",
+                            active_cfg.get("name"),
+                            active_cid,
+                            dev.get("name"),
+                        )
         except Exception as e:
             logger.debug("Engine active config redeploy skipped/failed: %s", e)
 

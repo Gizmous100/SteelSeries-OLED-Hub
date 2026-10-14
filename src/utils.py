@@ -52,6 +52,7 @@ def normalize_text(text: str) -> str:
     import unicodedata
 
     replacements = {
+        "®": "", "™": "", "©": "", "\ufffd": "",
         "ą": "a", "Ą": "A",
         "ć": "c", "Ć": "C",
         "ę": "e", "Ę": "E",
@@ -77,6 +78,8 @@ def normalize_text(text: str) -> str:
     # Strip any remaining combining accents (e.g. é -> e, ñ -> n, ã -> a)
     normalized = unicodedata.normalize("NFKD", text)
     return "".join(c for c in normalized if not unicodedata.combining(c))
+
+sanitize_text = normalize_text
 
 def set_startup(enable: bool):
     """

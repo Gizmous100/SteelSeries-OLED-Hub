@@ -10,6 +10,7 @@ from src.Timer import Timer
 from src.Calculator import Calculator
 from src.Weather import WeatherModule
 from src.volume import VolumeOverlay
+from src.ProfileOverlay import ProfileOverlay
 from src.image_utils import convert_to_bitmap
 from src.UserPreferences import UserPreferences
 from src.Systray import run_systray_async
@@ -18,7 +19,7 @@ from src.HardwareMonitor import HardwareMonitor
 from src.ExtensionReceiver import ExtensionReceiver
 from src.DiscordRPC import DiscordIPC
 from src.HIDListener import HIDListener
-from src.utils import is_process_running, find_steelseries_gg_path, launch_process, get_idle_time_ms, get_last_input_info, get_cursor_pos
+from src.utils import is_process_running, find_steelseries_gg_path, launch_process, get_idle_time_ms, get_last_input_info, get_cursor_pos, normalize_text
 import asyncio
 
 logger = logging.getLogger("OLED Customizer")
@@ -75,6 +76,10 @@ class DisplayManager:
         self._lock = __import__('threading').Lock()
 
         self.volume_overlay = VolumeOverlay(config)
+        profile_timeout = float(self.user_preferences.get_preference("profile_switch_display_time") or 2.5)
+        self.profile_overlay = ProfileOverlay(config, timeout=profile_timeout)
+        self._last_active_loadout_name = ""
+        self._test_profile_idx = 0
         self.hardware_monitor = HardwareMonitor(config, self.user_preferences)
         discord_port = self.user_preferences.get_preference("discord_local_port") or 8888
         self.extension_receiver = ExtensionReceiver(port=discord_port)
@@ -204,6 +209,9 @@ class DisplayManager:
         # Spotify worker thread (single persistent thread instead of spawning new ones)
         self._spotify_queue = Queue(maxsize=1)
         Thread(target=self._spotify_worker_loop, daemon=True, name="Spotify-Worker").start()
+
+        # Profile Switch Monitor thread (detects profile changes across all devices)
+        Thread(target=self._profile_monitor_loop, daemon=True, name="Profile-Monitor").start()
         
         # Config hot-reloading tracker
         self._config_file_path = self.user_preferences.config_path
@@ -774,6 +782,11 @@ class DisplayManager:
         self.timer.show_clock_mute_icons = bool(
             self.user_preferences.get_preference("show_clock_mute_icons"))
 
+        if hasattr(self, "profile_overlay"):
+            self.profile_overlay.set_timeout(
+                float(self.user_preferences.get_preference("profile_switch_display_time") or 2.5)
+            )
+
         if hasattr(self, "hardware_monitor"):
             self.hardware_monitor.update_preferences(self.user_preferences)
             
@@ -841,6 +854,25 @@ class DisplayManager:
                 self._last_frame_sent_time = time()
         except Exception as e:
             logger.debug("Initial AFK test blank frame failed: %s", e)
+
+    def trigger_profile_overlay_test(self, device=None, config=None, slot=None):
+        """Trigger displaying a test profile overlay on OLED."""
+        if hasattr(self, "profile_overlay"):
+            if device is not None and config is not None:
+                self.profile_overlay.trigger(device, config, slot=slot)
+                return
+
+            active_name = getattr(self, "_last_active_loadout_name", "") or "Black Desert"
+            sample_profiles = [
+                ("Profile", active_name, None),
+                ("Apex 7", "Config 2", 1),
+                ("Profile", "Battlefield 6", None),
+                ("Apex 7", "Config 1", 0),
+            ]
+            idx = getattr(self, "_test_profile_idx", 0)
+            dev, prof, sl = sample_profiles[idx % len(sample_profiles)]
+            self._test_profile_idx = idx + 1
+            self.profile_overlay.trigger(dev, prof, slot=sl)
 
     def _sync_lighting_state(self):
         """
@@ -1160,6 +1192,14 @@ class DisplayManager:
             # Volume & mic mute overlay > hardware monitor > everything else
             elif self.volume_overlay.should_display():
                 img = self.volume_overlay.get_image()
+                frame_data = convert_to_bitmap(img)
+            # Profile Switch Overlay
+            elif (
+                hasattr(self, "profile_overlay")
+                and self.profile_overlay.should_display()
+                and self.user_preferences.get_preference("show_profile_switch_overlay")
+            ):
+                img = self.profile_overlay.get_image()
                 frame_data = convert_to_bitmap(img)
             # Hardware monitor overlay
             elif self.display_hw_monitor or self.hardware_monitor.should_display() or self.hardware_monitor.is_game_running():
@@ -1894,3 +1934,284 @@ class DisplayManager:
                 self.volume_overlay.set_discord_mute(None, None, False)
                 self._discord_ipc.close()
                 sleep(10)  # Wait before retry on error
+
+    def _profile_monitor_loop(self):
+        """
+        Background daemon thread that monitors SteelSeries profile changes:
+        1. SteelSeries GG Loadouts (Desktop, Black Desert, Battlefield 6, etc.)
+           polled via https://{ggEncryptedAddress}/v1/loadouts/active and /v1/loadouts
+        2. Hardware Onboard Profile Cycling (e.g. Apex 7 onboard slots Config 1..5 switched via SteelSeries+F9)
+           polled via https://{encryptedAddress}/v1/connectedDevices
+        Uses SQLite DB & WAL mtime checks for ultra-fast, low-CPU change detection (~5 microseconds).
+        """
+        import os
+        import re
+        import json
+        import ssl
+        import urllib.request
+
+        ctx = ssl._create_unverified_context()
+        watch_paths = [
+            r"C:\ProgramData\SteelSeries\GG\db\database.db",
+            r"C:\ProgramData\SteelSeries\GG\db\database.db-wal",
+            r"C:\ProgramData\SteelSeries\GG\apps\engine\db\database.db",
+            r"C:\ProgramData\SteelSeries\GG\apps\engine\db\database.db-wal",
+        ]
+
+        def clean_profile_name(name: str) -> str:
+            if not name:
+                return "Profile"
+            name = re.sub(r'[\u2122\u00ae\u00a9\ufffd\xae\x99]', '', name)
+            name = normalize_text(name).strip()
+            name = re.sub(r'\s+', ' ', name)
+            lower_tok = name.lower().replace(" ", "").replace("_", "").replace("-", "")
+            if lower_tok == "blackdesert":
+                return "Black Desert"
+            if lower_tok == "battlefield6":
+                return "Battlefield 6"
+            if lower_tok == "leagueoflegends":
+                return "League of Legends"
+            if name.islower():
+                return name.title()
+            return name
+
+        last_mtimes = {}
+        last_poll_ts = 0.0
+        # Map: device_key -> (cfg_id, display_name, slot)
+        active_profiles_map = {}
+        last_active_loadout_id = None
+        last_active_loadout_name = None
+        initial_run = True
+
+        # Mapping: config_id (GUID) -> friendly loadout name (e.g. "Black Desert", "Desktop")
+        cfg_to_loadout = {}
+        loadout_id_to_name = {}
+        last_loadout_fetch_ts = 0.0
+
+        # Global overlay trigger debounce to avoid rapid / duplicate triggers across APIs & devices
+        last_trigger_name = None
+        last_trigger_time = 0.0
+
+        def trigger_overlay(header: str, name: str, slot=None):
+            nonlocal last_trigger_name, last_trigger_time
+            now = time()
+
+            # Deduplication 1: Suppress identical profile within 4.0s (overlay displays for 2.5s)
+            if name == last_trigger_name and (now - last_trigger_time) < 4.0:
+                return
+
+            # Deduplication 2: Suppress rapid consecutive triggers across devices within 250ms
+            if (now - last_trigger_time) < 0.25:
+                return
+
+            last_trigger_name = name
+            last_trigger_time = now
+            self._last_active_loadout_name = name
+
+            slot_info = f" (slot {slot + 1})" if slot is not None else ""
+            logger.info("[PROFILE-MONITOR] Profile switch detected: %s -> '%s'%s", header, name, slot_info)
+
+            # Wake display and lighting if AFK
+            if self._is_afk:
+                self._is_afk = False
+                self._afk_toggled_time = int(time() * 1000)
+                self._afk_settled = False
+                self._last_sent_frame = None
+                self._sync_lighting_state()
+
+            # Trigger OLED overlay
+            if (
+                hasattr(self, "profile_overlay")
+                and self.user_preferences.get_preference("show_profile_switch_overlay")
+            ):
+                self.profile_overlay.trigger(header, name, slot=slot)
+
+        def fetch_gg_loadouts(target_gg_addr):
+            nonlocal cfg_to_loadout, loadout_id_to_name, last_loadout_fetch_ts
+            if not target_gg_addr:
+                return
+            try:
+                req = urllib.request.Request(f"{target_gg_addr}/v1/loadouts")
+                with urllib.request.urlopen(req, context=ctx, timeout=1.5) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                new_cfg_map = {}
+                new_id_map = {}
+                loadouts = payload.get("loadouts", [])
+
+                for ld in loadouts:
+                    lid = ld.get("id")
+                    name = clean_profile_name(ld.get("name") or "Profile")
+                    if lid:
+                        new_id_map[lid] = name
+
+                # Count occurrences of each config_id across all loadouts
+                cfg_occurrences = {}
+                for ld in loadouts:
+                    for c in ld.get("configs", []):
+                        cid = c.get("config_id")
+                        if cid:
+                            cfg_occurrences[cid] = cfg_occurrences.get(cid, 0) + 1
+
+                # If a config_id is unique to a loadout (e.g. game-specific keyboard/mouse profile),
+                # map it to that game's clean name. If shared across multiple loadouts (default configs),
+                # map it to Desktop so standalone device checks resolve to Desktop.
+                for ld in loadouts:
+                    raw_name = ld.get("name") or "Profile"
+                    name = clean_profile_name(raw_name)
+                    is_desktop = (raw_name.strip().lower() == "desktop")
+                    for c in ld.get("configs", []):
+                        cid = c.get("config_id")
+                        if not cid:
+                            continue
+                        if cfg_occurrences.get(cid, 0) == 1:
+                            new_cfg_map[cid] = name
+                        elif is_desktop:
+                            new_cfg_map[cid] = "Desktop"
+
+                cfg_to_loadout = new_cfg_map
+                loadout_id_to_name = new_id_map
+                last_loadout_fetch_ts = time()
+            except Exception as e:
+                logger.debug("[PROFILE-MONITOR] Could not fetch /v1/loadouts: %s", e)
+
+        while self._running:
+            try:
+                now = time()
+                any_file_changed = False
+                for p in watch_paths:
+                    try:
+                        if os.path.exists(p):
+                            m = os.path.getmtime(p)
+                            if p in last_mtimes and m != last_mtimes[p]:
+                                any_file_changed = True
+                            last_mtimes[p] = m
+                    except Exception:
+                        pass
+
+                time_since_poll = now - last_poll_ts
+
+                # Check if we should poll: any DB/WAL changed OR 1.0s heartbeat fallback
+                if any_file_changed or time_since_poll >= 1.0:
+                    last_poll_ts = now
+
+                    # 1. Resolve API addresses
+                    gg_addr = getattr(self.steelseries_api, "gg_encrypted_address", None)
+                    engine_addr = getattr(self.steelseries_api, "encrypted_address", None)
+
+                    if not gg_addr or not engine_addr:
+                        try:
+                            props_path = r"C:\ProgramData\SteelSeries\GG\coreProps.json"
+                            if os.path.exists(props_path):
+                                with open(props_path, "r", encoding="utf-8") as f:
+                                    core_props = json.load(f)
+                                if not gg_addr and "ggEncryptedAddress" in core_props:
+                                    gg_addr = f"https://{core_props['ggEncryptedAddress']}"
+                                if not engine_addr and "encryptedAddress" in core_props:
+                                    engine_addr = f"https://{core_props['encryptedAddress']}"
+                        except Exception:
+                            pass
+
+                    # Refresh GG loadouts mapping on start, on DB change, or periodically every 20 seconds
+                    if gg_addr and (initial_run or any_file_changed or (now - last_loadout_fetch_ts >= 20.0)):
+                        fetch_gg_loadouts(gg_addr)
+
+                    current_active_loadout_name = None
+
+                    # 2. Check SteelSeries GG Loadouts (/v1/loadouts/active)
+                    if gg_addr:
+                        try:
+                            req_gg = urllib.request.Request(f"{gg_addr}/v1/loadouts/active")
+                            with urllib.request.urlopen(req_gg, context=ctx, timeout=1.5) as resp_gg:
+                                payload_gg = json.loads(resp_gg.read().decode("utf-8"))
+                            active_ld = payload_gg.get("activeLoadout")
+                            if active_ld and isinstance(active_ld, dict):
+                                ld_id = active_ld.get("id")
+                                raw_ld_name = active_ld.get("name") or "Profile"
+                                ld_name = clean_profile_name(raw_ld_name)
+                                current_active_loadout_name = ld_name
+
+                                if not initial_run and last_active_loadout_id is not None and ld_id != last_active_loadout_id:
+                                    trigger_overlay("Profile", ld_name, slot=None)
+
+                                last_active_loadout_id = ld_id
+                                last_active_loadout_name = ld_name
+                                self._last_active_loadout_name = ld_name
+                        except Exception as e_gg:
+                            logger.debug("Failed to query active loadout: %s", e_gg)
+
+                    # 3. Check Hardware Onboard Configs (/v1/connectedDevices)
+                    if engine_addr:
+                        req_dev = urllib.request.Request(f"{engine_addr}/v1/connectedDevices")
+                        payload_dev = None
+                        try:
+                            with urllib.request.urlopen(req_dev, context=ctx, timeout=1.5) as resp_dev:
+                                payload_dev = json.loads(resp_dev.read().decode("utf-8"))
+                        except Exception:
+                            payload_dev = None
+
+                        if payload_dev and "devices" in payload_dev:
+                            for dev in payload_dev.get("devices", []):
+                                dev_name = dev.get("name") or dev.get("full_name") or "device"
+                                dev_key = str(dev.get("id") or dev.get("type_name") or dev_name)
+                                cfgs = dev.get("configuration_metadata") or []
+
+                                active_cfg = (
+                                    next((c for c in cfgs if c.get("last_deployed") == 1 and c.get("active") == 1), None)
+                                    or next((c for c in cfgs if c.get("last_deployed") == 1), None)
+                                    or next((c for c in cfgs if c.get("active") == 1), None)
+                                )
+                                if not active_cfg:
+                                    continue
+
+                                cfg_id = active_cfg.get("id")
+                                cfg_name = active_cfg.get("name") or "Default"
+
+                                prev_cfg_id = active_profiles_map.get(dev_key)
+                                active_profiles_map[dev_key] = cfg_id
+
+                                # ONLY process when configuration ID actually changes on this device
+                                if not initial_run and prev_cfg_id and prev_cfg_id != cfg_id:
+                                    if cfg_id and cfg_id not in cfg_to_loadout and gg_addr:
+                                        fetch_gg_loadouts(gg_addr)
+
+                                    resolved_loadout = cfg_to_loadout.get(cfg_id) if cfg_id else None
+
+                                    if resolved_loadout:
+                                        # If Engine config has a generic name (e.g. Config 1, Config 2), sync it to Engine!
+                                        if engine_addr and re.search(r'^(?:Config|Profile|Slot)\s*[1-5]$', cfg_name, re.IGNORECASE):
+                                            try:
+                                                rename_url = f"{engine_addr}/configuration/{cfg_id}"
+                                                rename_req = urllib.request.Request(
+                                                    rename_url,
+                                                    data=json.dumps({"name": resolved_loadout}).encode("utf-8"),
+                                                    headers={"Content-Type": "application/json"},
+                                                    method="PUT"
+                                                )
+                                                with urllib.request.urlopen(rename_req, context=ctx, timeout=1.0) as _:
+                                                    pass
+                                                logger.info("[PROFILE-MONITOR] Synchronized Engine configuration name: '%s' -> '%s' (id=%s)", cfg_name, resolved_loadout, cfg_id)
+                                            except Exception as ren_e:
+                                                logger.debug("[PROFILE-MONITOR] Could not auto-rename configuration %s: %s", cfg_id, ren_e)
+
+                                        # Part of a game/desktop loadout! Never show generic 'Config 1' / 'Config 2'
+                                        trigger_overlay("Profile", resolved_loadout, slot=None)
+                                    else:
+                                        # Hardware onboard profile slot (e.g. Apex 7 slots 3..5 switched via SteelSeries+F9)
+                                        slot = None
+                                        slot_match = re.search(r'(?:Config|Profile|Slot)\s*([1-5])', cfg_name, re.IGNORECASE)
+                                        if slot_match:
+                                            try:
+                                                slot = int(slot_match.group(1)) - 1  # 0-indexed for [1/5]..[5/5]
+                                            except Exception:
+                                                slot = None
+                                        if slot_match:
+                                            trigger_overlay(dev_name, cfg_name, slot=slot)
+                                        else:
+                                            trigger_overlay("Profile", clean_profile_name(cfg_name), slot=slot)
+
+                    initial_run = False
+
+            except Exception as e:
+                logger.debug("Profile monitor loop exception: %s", e)
+
+            sleep(0.15)

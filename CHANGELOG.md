@@ -8,6 +8,30 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 ---
 
+## [`v1.58`] — 2026-10-14 — Real-Time Profile Switch Detection & OLED Overlay (Apex 7, Rival 5 & SteelSeries GG Game Profiles)
+### ✨ New Features & Improvements (`+0.01`)
+- **Real-Time Profile Switch Detection across All SteelSeries Devices & GG Loadouts (`src/DisplayManager.py`, `src/ProfileOverlay.py`, `src/SteelSeriesAPI.py`):**
+  - Designed and implemented a high-performance background daemon thread (`_profile_monitor_loop`) that detects active configuration and profile switches across keyboards (`Apex 7` onboard slots 1..5 via `SteelSeries + F9` or Engine UI), mice (`Rival 5`), and SteelSeries GG active loadouts / game profiles (`Desktop`, `Black Desert`, `Battlefield 6`, `League of Legends`, etc.).
+  - Utilizes near-zero CPU monitoring of SteelSeries GG and Engine SQLite Write-Ahead Logs (`C:\ProgramData\SteelSeries\GG\apps\engine\db\database.db-wal` and `C:\ProgramData\SteelSeries\GG\db\database.db` mtime, taking ~5 microseconds per check), querying `/v1/loadouts/active` via `ggEncryptedAddress` and `/v1/connectedDevices` via `encryptedAddress` within milliseconds whenever GG updates an active profile.
+  - Automatically captures the actual user-configured game profile/loadout name instead of staying stuck on generic hardware names like `Config 1`, and prevents unwanted config redeployments that would overwrite game profiles.
+  - Resolves device configuration IDs directly to their associated SteelSeries GG Loadouts (`/v1/loadouts`), preventing generic `Config 1` and `Config 2` names from appearing on automatic Desktop/game transitions, and applies smart multi-second deduplication across asynchronous device events.
+  - Automatically extracts the device name, the active configuration name, and keyboard hardware slot index (`[1/5]`..`[5/5]`).
+- **High-Contrast 128×40 OLED Profile Switch Overlay (`src/ProfileOverlay.py`, `src/utils.py`):**
+  - Renders a clean, high-contrast monochrome OLED notification when a profile switch occurs:
+    - Outer border (`[0, 0, 127, 39]`).
+    - Inverted top pill header with device name badge and slot index (e.g., `PROFILE`, `APEX 7 [1/5]`, `RIVAL 5`, or `NOVA 7`).
+    - Subtle horizontal accent divider line (`y = 14`).
+    - Auto-scaled centered bold profile name (14pt for short names, 12pt for medium names, 10pt for long names such as game titles like `Battlefield 6`, falling back to 8pt for very long names).
+    - European and Polish diacritic sanitization (`sanitize_text`), plus stripping of registered/trademark symbols (`®`, `™`, `©`).
+  - Automatically wakes the OLED screen and keyboard/mouse lighting from AFK power-saving mode upon profile switch, and ensures hardware `idle_timeout` is sanitized on newly deployed profiles.
+- **Settings GUI Controls & Live Test (`src/SettingsWindow.py`, `src/UserPreferences.py`, `src/DisplayManager.py`):**
+  - Added **`🎯 Profile Switch Overlay`** section in **Settings → 📺 Display**:
+    - **`Show Profile Name on OLED when Changed`** (`show_profile_switch_overlay`, enabled by default).
+    - **`Overlay Display Time (s)`** (`profile_switch_display_time`, configurable float, default 2.5s).
+    - **`🎯 Test Profile Overlay Now`** button triggering an immediate OLED preview that cycles through realistic profile examples (`Profile -> Black Desert`, `Apex 7 [2/5] -> Config 2`, `Profile -> Battlefield 6`, `Apex 7 [1/5] -> Config 1`), prioritizing the live active profile name on the first test click.
+
+---
+
 ## [`v1.57`] — 2026-10-12 — Apex 7 Onboard Hardware `idle_timeout` Override During Mouse Activity & `GetCursorPos` Tracking
 ### ✨ Bug Fixes & Improvements (`+0.01`)
 - **Apex 7 Onboard Hardware `idle_timeout` Override (`src/SteelSeriesAPI.py`):**

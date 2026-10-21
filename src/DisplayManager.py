@@ -10,6 +10,7 @@ from src.Timer import Timer
 from src.Calculator import Calculator
 from src.Weather import WeatherModule
 from src.volume import VolumeOverlay
+from src.ProfileOverlay import ProfileOverlay
 from src.image_utils import convert_to_bitmap
 from src.UserPreferences import UserPreferences
 from src.Systray import run_systray_async
@@ -75,7 +76,12 @@ class DisplayManager:
         self._lock = __import__('threading').Lock()
 
         self.volume_overlay = VolumeOverlay(config)
+        profile_timeout = float(self.user_preferences.get_preference("profile_switch_display_time") or 3.5)
+        self.profile_overlay = ProfileOverlay(config, timeout=profile_timeout)
+        self._last_active_loadout_name = ""
+        self._test_profile_idx = 0
         self.hardware_monitor = HardwareMonitor(config, self.user_preferences)
+        Thread(target=self._profile_monitor_loop, daemon=True, name="Profile-Monitor").start()
         discord_port = self.user_preferences.get_preference("discord_local_port") or 8888
         self.extension_receiver = ExtensionReceiver(port=discord_port)
         self.extension_receiver.start()
@@ -767,6 +773,11 @@ class DisplayManager:
             
         if hasattr(self.player, "set_style"):
             self.player.set_style(self.user_preferences.get_preference("player_style"))
+
+        if hasattr(self, "profile_overlay"):
+            self.profile_overlay.set_timeout(
+                float(self.user_preferences.get_preference("profile_switch_display_time") or 3.5)
+            )
         self.timer.show_battery = bool(
             self.user_preferences.get_preference("show_headset_battery"))
         self.timer.show_battery_percent = bool(
@@ -1149,6 +1160,7 @@ class DisplayManager:
                     self._sync_lighting_state()
 
             frame_data = None
+            is_profile_active = False
 
             if self._is_afk:
                 # AFK: Blank screen (all 640 bytes = 0x00)
@@ -1161,6 +1173,15 @@ class DisplayManager:
             elif self.volume_overlay.should_display():
                 img = self.volume_overlay.get_image()
                 frame_data = convert_to_bitmap(img)
+            # Profile Switch Overlay
+            elif (
+                hasattr(self, "profile_overlay")
+                and self.profile_overlay.should_display()
+                and self.user_preferences.get_preference("show_profile_switch_overlay")
+            ):
+                img = self.profile_overlay.get_image()
+                frame_data = convert_to_bitmap(img)
+                is_profile_active = True
             # Hardware monitor overlay
             elif self.display_hw_monitor or self.hardware_monitor.should_display() or self.hardware_monitor.is_game_running():
                 img = self.hardware_monitor.get_image()
@@ -1196,7 +1217,7 @@ class DisplayManager:
             now_sec = time()
             if frame_data is not None:
                 resend_interval = 2.0 if self._is_afk else 1.0
-                force_resend = (now_sec - self._last_frame_sent_time > resend_interval)
+                force_resend = (now_sec - self._last_frame_sent_time > resend_interval) or is_profile_active
                 if (frame_data != self._last_sent_frame) or force_resend:
                     try:
                         if self.steelseries_api.send_frame(frame_data):
@@ -1894,3 +1915,160 @@ class DisplayManager:
                 self.volume_overlay.set_discord_mute(None, None, False)
                 self._discord_ipc.close()
                 sleep(10)  # Wait before retry on error
+    def trigger_profile_overlay_test(self):
+        """Test triggering the profile overlay, cycling through sample devices/profiles."""
+        if not hasattr(self, "profile_overlay"):
+            return
+        test_samples = [
+            ("profile", "Battlefield 6", None),
+            ("profile", "Black Desert", None),
+            ("apex_7", "Desktop", 0),
+            ("apex_7", "Black Desert", 1),
+            ("rival_5", "Black Desert", None),
+            ("profile", "Desktop", None),
+        ]
+        dev, prof, slot = test_samples[self._test_profile_idx % len(test_samples)]
+        self._test_profile_idx += 1
+        self.profile_overlay.trigger(dev, prof, slot)
+
+    def _profile_monitor_loop(self):
+        """
+        Background loop polling SteelSeries GG and Engine APIs for active profile switches.
+        - Polling /v1/loadouts/active detects game/desktop loadout switching (e.g. Black Desert, Desktop).
+        - Polling /v1/connectedDevices detects individual device profile/slot switches (e.g. SteelSeries + F9).
+        - Purely in-memory mapping to prevent any modifications or corruption to Engine's SQLite database.
+        """
+        logger.info("[PROFILE-MONITOR] Profile monitor loop started")
+        import urllib3
+        from json import loads
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+        monitor_http = urllib3.PoolManager(
+            cert_reqs='CERT_NONE',
+            timeout=urllib3.Timeout(connect=1.0, read=2.0),
+            retries=False
+        )
+
+        last_loadout_id = None
+        last_loadout_name = None
+        last_dev_configs = {}      # dev_name -> active_cfg_id
+        cfg_to_loadout = {}        # cfg_id -> loadout_name
+        last_loadouts_cache_ts = 0.0
+        last_loadout_trigger_ts = 0.0
+        initial_sync = True
+
+        while self._running:
+            try:
+                if not self.user_preferences.get_preference("show_profile_switch_overlay"):
+                    sleep(1.5)
+                    continue
+
+                gg_url = getattr(self.steelseries_api, "gg_encrypted_address", None)
+                eng_url = getattr(self.steelseries_api, "encrypted_address", None)
+
+                if not gg_url or not eng_url:
+                    sleep(2.0)
+                    continue
+
+                now = time()
+
+                # 1. Periodically cache loadout <-> config mappings (every 15s)
+                if (now - last_loadouts_cache_ts) > 15.0:
+                    try:
+                        r_loadouts = monitor_http.request("GET", f"{gg_url}/v1/loadouts")
+                        if r_loadouts.status == 200:
+                            data = loads(r_loadouts.data.decode("utf-8", errors="replace"))
+                            new_map = {}
+                            loadouts_list = data.get("loadouts", data) if isinstance(data, dict) else data
+                            if isinstance(loadouts_list, list):
+                                desktop_cfg_ids = set()
+                                for l in loadouts_list:
+                                    if isinstance(l, dict) and (l.get("name") or "").lower() == "desktop":
+                                        for c in l.get("configs", []):
+                                            if c.get("config_id"):
+                                                desktop_cfg_ids.add(c.get("config_id"))
+                                for l in loadouts_list:
+                                    if isinstance(l, dict) and (l.get("name") or "").lower() != "desktop":
+                                        lname = l.get("name")
+                                        if lname:
+                                            for c in l.get("configs", []):
+                                                cid = c.get("config_id")
+                                                if cid and cid not in desktop_cfg_ids:
+                                                    new_map[cid] = lname
+                            cfg_to_loadout = new_map
+                            last_loadouts_cache_ts = now
+                    except Exception as e:
+                        logger.debug(f"[PROFILE-MONITOR] Loadouts cache error: {e}")
+
+                # 2. Check GG Active Loadout (Desktop, Black Desert, Battlefield 6, etc.)
+                try:
+                    r_act = monitor_http.request("GET", f"{gg_url}/v1/loadouts/active")
+                    if r_act.status == 200:
+                        act_data = loads(r_act.data.decode("utf-8", errors="replace"))
+                        loadout = act_data.get("activeLoadout", {})
+                        lid = loadout.get("id")
+                        lname = loadout.get("name")
+                        if lname:
+                            if initial_sync:
+                                last_loadout_id = lid
+                                last_loadout_name = lname
+                            elif lname != last_loadout_name or (lid and lid != last_loadout_id):
+                                logger.info(f"[PROFILE-MONITOR] Active loadout switched: '{last_loadout_name}' -> '{lname}'")
+                                last_loadout_id = lid
+                                last_loadout_name = lname
+                                last_loadout_trigger_ts = now
+                                self.profile_overlay.trigger(raw_device_name="profile", raw_profile_name=lname)
+                except Exception as e:
+                    logger.debug(f"[PROFILE-MONITOR] Active loadout poll error: {e}")
+
+                # 3. Check Connected Devices (e.g. Apex 7 onboard switch SteelSeries+F9)
+                try:
+                    r_dev = monitor_http.request("GET", f"{eng_url}/v1/connectedDevices")
+                    if r_dev.status == 200:
+                        dev_data = loads(r_dev.data.decode("utf-8", errors="replace"))
+                        devices = dev_data.get("devices", []) if isinstance(dev_data, dict) else []
+                        for d in devices:
+                            dname = d.get("name")
+                            cfgs = d.get("configuration_metadata", [])
+                            # CRITICAL: Prioritize active == 1 over last_deployed == 1
+                            act_cfg = next((c for c in cfgs if c.get("active") == 1), None) or next((c for c in cfgs if c.get("last_deployed") == 1), None)
+                            if not act_cfg:
+                                continue
+                            cfg_id = act_cfg.get("id")
+                            cfg_name = act_cfg.get("name")
+
+                            if initial_sync:
+                                last_dev_configs[dname] = cfg_id
+                                continue
+
+                            if last_dev_configs.get(dname) != cfg_id:
+                                last_dev_configs[dname] = cfg_id
+
+                                # Suppress duplicate device trigger if overall loadout switch just fired
+                                if (now - last_loadout_trigger_ts) < 6.0:
+                                    logger.debug(f"[PROFILE-MONITOR] Device {dname} switch to '{cfg_name}' suppressed (part of loadout switch)")
+                                    continue
+
+                                slot = None
+                                if cfg_name and "config" in cfg_name.lower():
+                                    parts = cfg_name.split()
+                                    if len(parts) >= 2 and parts[-1].isdigit():
+                                        try:
+                                            slot = int(parts[-1]) - 1
+                                        except Exception:
+                                            pass
+
+                                display_name = cfg_to_loadout.get(cfg_id) or cfg_name
+                                logger.info(f"[PROFILE-MONITOR] Device {dname} configuration changed to '{display_name}' (slot={slot})")
+                                self.profile_overlay.trigger(raw_device_name=dname, raw_profile_name=display_name, slot=slot)
+                except Exception as e:
+                    logger.debug(f"[PROFILE-MONITOR] Connected devices poll error: {e}")
+
+                if initial_sync:
+                    initial_sync = False
+
+                sleep(0.5)
+
+            except Exception as e:
+                logger.debug(f"[PROFILE-MONITOR] Loop exception: {e}")
+                sleep(2.0)

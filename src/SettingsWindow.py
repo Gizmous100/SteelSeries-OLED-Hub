@@ -422,6 +422,8 @@ class SettingsGUI:
         afk_game_pref = self.prefs.get_preference("afk_disable_in_games")
         self.vars["afk_disable_in_games"] = tk.BooleanVar(value=afk_game_pref if afk_game_pref is not None else True)
         self.vars["afk_timeout_minutes"] = tk.StringVar(value=str(self.prefs.get_preference("afk_timeout_minutes") or "5"))
+        self.vars["show_profile_switch_overlay"] = tk.BooleanVar(value=bool(self.prefs.get_preference("show_profile_switch_overlay")))
+        self.vars["profile_switch_display_time"] = tk.StringVar(value=str(self.prefs.get_preference("profile_switch_display_time") or "3.5"))
 
     def _create_pages(self):
         # General
@@ -494,6 +496,25 @@ class SettingsGUI:
             width=24,
         )
         self._entry_row(p_disp, "Hotkey Display Time (s)", self.vars["weather_display_time"], width=10)
+        
+        tk.Frame(p_disp, bg=Colors.CONTENT, height=10).pack()
+        self._header(p_disp, "🎯 Profile Switch Overlay")
+        self._toggle_row(p_disp, "Show Profile Name on OLED when Changed", self.vars["show_profile_switch_overlay"])
+        self._entry_row(p_disp, "Overlay Display Time (s)", self.vars["profile_switch_display_time"], width=10)
+        prof_btn_row = tk.Frame(p_disp, bg=Colors.CONTENT)
+        prof_btn_row.pack(fill="x", pady=(8, 0))
+        tk.Button(
+            prof_btn_row,
+            text="🎯 Test Profile Overlay Now",
+            bg=Colors.CARD_BG,
+            fg=Colors.TEXT_MAIN,
+            font=FONT_BODY,
+            relief="flat",
+            cursor="hand2",
+            padx=12,
+            pady=4,
+            command=self._test_profile_overlay,
+        ).pack(side="left", padx=(5, 0))
         self.pages["Display"] = p_disp
 
         # AFK Mode
@@ -734,6 +755,15 @@ class SettingsGUI:
                     self.manager.trigger_afk_test()
                 except Exception as e:
                     logger.error(f"AFK test failed: {e}")
+            threading.Thread(target=_worker, daemon=True).start()
+
+    def _test_profile_overlay(self):
+        if self.manager and hasattr(self.manager, "trigger_profile_overlay_test"):
+            def _worker():
+                try:
+                    self.manager.trigger_profile_overlay_test()
+                except Exception as e:
+                    logger.error(f"Profile overlay test failed: {e}")
             threading.Thread(target=_worker, daemon=True).start()
 
     def _get_discord_redirect_uri(self) -> str:

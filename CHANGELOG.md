@@ -4,7 +4,17 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 **Project Versioning Policy:**
 - **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.58`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.59`).
+
+---
+
+## [`v1.59`] — 2026-10-21 — Real-Time Profile Switch Detection & OLED Overlay Fixer for GG Games and Preconfigs
+### ✨ Fixer (`+0.01`)
+- **Real-Time Profile Switch Detection & OLED Overlay Fixer (`src/ProfileOverlay.py`, `src/DisplayManager.py`):**
+  - Added real-time background tracking for SteelSeries GG active game loadouts (`/v1/loadouts/active`) and individual connected device configurations (`/v1/connectedDevices`).
+  - When switching to games or preconfigs in GG (such as *Battlefield 6*, *World of Warcraft*, etc. which have `onboard_profile_slot == -1` and produce no hardware firmware animation), an elegant, centered 128×40 OLED overlay is displayed instantly with an inverted device badge and clean divider line.
+  - Added event deduplication and 10 FPS continuous frame streaming during the overlay window to guarantee smooth, persistent visibility.
+  - Fully configurable in Settings under **Display → 🎯 Profile Switch Overlay** with customizable display duration (`profile_switch_display_time`) and live test button (`🎯 Test Profile Overlay Now`).
 
 ---
 

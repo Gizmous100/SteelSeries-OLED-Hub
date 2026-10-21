@@ -4,7 +4,15 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 **Project Versioning Policy:**
 - **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.57`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.58`).
+
+---
+
+## [`v1.58`] — 2026-10-21 — Active Profile Priority in Engine Redeploy & Game Auto-Switch Safeguard
+### ✨ Bug Fixes & Improvements (`+0.01`)
+- **Active Profile Priority in Engine Configuration Redeploy (`src/SteelSeriesAPI.py`):**
+  - Root-caused an issue where exiting AFK mode or reinitializing SteelSeries GG Engine illumination erroneously restored stale desktop configurations (e.g. `Desktop` on Apex 7 or `Default` on Rival 5) instead of the user's active game profile (such as `Black Desert`).
+  - Corrected configuration candidate selection priority in `_redeploy_engine_active_configs()`: `active == 1` candidate selection now strictly precedes fallback `last_deployed == 1` matching. When a game profile is triggered or selected in SteelSeries GG, Engine assigns `active: 1` immediately, guaranteeing `POST /configuration/<id>/forceDeploy` always redeploys the active game profile rather than reverting to previous desktop hardware profiles.
 
 ---
 

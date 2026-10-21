@@ -184,8 +184,8 @@ class SteelSeriesAPI:
 
                 active_cfg = (
                     next((c for c in cfgs if c.get("active") == 1 and c.get("last_deployed") == 1), None)
-                    or next((c for c in cfgs if c.get("last_deployed") == 1), None)
                     or next((c for c in cfgs if c.get("active") == 1), None)
+                    or next((c for c in cfgs if c.get("last_deployed") == 1), None)
                 )
                 if active_cfg and active_cfg.get("id"):
                     active_cid = active_cfg["id"]

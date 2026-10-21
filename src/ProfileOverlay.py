@@ -133,70 +133,38 @@ class ProfileOverlay:
 
     def get_image(self) -> Image.Image:
         """
-        Draw a crisp 128x40 monochrome bitmap:
-        - Outer border [0, 0, 127, 39]
-        - Inverted top pill with Device Name and Slot indicator (e.g. APEX 7 [1/5])
-        - Subtle horizontal divider line at y=14
-        - Large bold centered profile name
+        Draw a clean, native-styled monochrome bitmap matching SteelSeries Apex 7 built-in OSD:
+        - Deep black background
+        - Game/profile name centered both horizontally and vertically (anchor='mm')
+        - Zero outer borders, headers, labels, or boxes for a pure native built-in look
         """
         w, h = self.config.width, self.config.height
         image = Image.new("1", (w, h), color=self.config.secondary)
         draw = ImageDraw.Draw(image)
 
-        # Outer border
-        draw.rectangle([0, 0, w - 1, h - 1], outline=self.config.primary)
-
-        # Header Badge
-        badge_text = f" {self._current_device.upper()} "
-        if self._current_slot is not None and self._current_slot >= 0:
-            badge_text += f"[{self._current_slot + 1}/5] "
-
-        try:
-            bbox = self._font_badge.getbbox(badge_text)
-            bw = bbox[2] - bbox[0]
-            bh = bbox[3] - bbox[1]
-        except Exception:
-            bw, bh = len(badge_text) * 6, 8
-
-        bx = max(2, (w - bw) // 2)
-
-        # Inverted pill for device name
-        draw.rectangle([bx - 2, 2, min(w - 3, bx + bw + 2), 12], fill=self.config.primary)
-        draw.text((bx, 2), badge_text, font=self._font_badge, fill=self.config.secondary)
-
-        # Horizontal accent line
-        draw.line([(3, 14), (w - 4, 14)], fill=self.config.primary)
-
-        # Profile Name centered in bottom area
         prof = self._current_profile
-        # Select best font size to avoid truncation
-        if len(prof) <= 10:
-            fnt = self._font_p_large
-            y_offset = 18
-        elif len(prof) <= 14:
-            fnt = self._font_p_mid
-            y_offset = 20
-        else:
-            fnt = self._font_p_small
-            y_offset = 22
 
-        try:
-            p_bbox = fnt.getbbox(prof)
-            pw = p_bbox[2] - p_bbox[0]
-        except Exception:
-            pw = len(prof) * 7
+        # Dynamically choose the largest font that fits within the display width
+        candidate_fonts = [
+            self._font_p_large,  # 14pt VerdanaBold
+            self._font_p_mid,    # 12pt VerdanaBold
+            self._font_p_small,  # 10pt VerdanaBold
+            self._font_badge,    # 10pt MunroSmall
+        ]
 
-        if pw > (w - 8):
-            fnt = self._font_badge
-            y_offset = 24
+        selected_font = candidate_fonts[-1]
+        for fnt in candidate_fonts:
             try:
                 p_bbox = fnt.getbbox(prof)
                 pw = p_bbox[2] - p_bbox[0]
             except Exception:
-                pw = len(prof) * 5
+                pw = len(prof) * 7
+            if pw <= (w - 8):
+                selected_font = fnt
+                break
 
-        px = max(4, (w - pw) // 2)
-        draw.text((px, y_offset), prof, font=fnt, fill=self.config.primary)
+        # Draw centered both horizontally and vertically
+        draw.text((w // 2, h // 2), prof, font=selected_font, fill=self.config.primary, anchor="mm")
 
         return image
 

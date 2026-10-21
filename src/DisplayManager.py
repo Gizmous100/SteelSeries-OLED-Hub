@@ -1953,6 +1953,7 @@ class DisplayManager:
         last_loadout_name = None
         last_dev_configs = {}      # dev_name -> active_cfg_id
         cfg_to_loadout = {}        # cfg_id -> loadout_name
+        apex_cfg_slots = {}        # cfg_id -> onboard_profile_slot (0..4 for onboard, -1 for preconfigs)
         last_loadouts_cache_ts = 0.0
         last_loadout_trigger_ts = 0.0
         initial_sync = True
@@ -1960,21 +1961,39 @@ class DisplayManager:
         while self._running:
             try:
                 if not self.user_preferences.get_preference("show_profile_switch_overlay"):
-                    sleep(1.5)
+                    sleep(1.0)
                     continue
 
                 gg_url = getattr(self.steelseries_api, "gg_encrypted_address", None)
                 eng_url = getattr(self.steelseries_api, "encrypted_address", None)
 
                 if not gg_url or not eng_url:
-                    sleep(2.0)
+                    sleep(1.0)
                     continue
 
                 now = time()
 
-                # 1. Periodically cache loadout <-> config mappings (every 15s)
+                # 1. Periodically cache loadout <-> config mappings and apex_7 onboard slots (every 15s)
                 if (now - last_loadouts_cache_ts) > 15.0:
                     try:
+                        # Cache apex_7 config onboard slots
+                        r_dev_cache = monitor_http.request("GET", f"{eng_url}/v1/connectedDevices")
+                        if r_dev_cache.status == 200:
+                            dev_data = loads(r_dev_cache.data.decode("utf-8", errors="replace"))
+                            for d in dev_data.get("devices", []):
+                                if d.get("name") == "apex_7":
+                                    for c in d.get("configuration_metadata", []):
+                                        cid = c.get("id")
+                                        if cid and cid not in apex_cfg_slots:
+                                            try:
+                                                r_c = monitor_http.request("GET", f"{eng_url}/configuration/{cid}")
+                                                if r_c.status == 200:
+                                                    c_data = loads(r_c.data.decode("utf-8", errors="replace")).get("configuration", {})
+                                                    obs = c_data.get("onboard_profile_slot")
+                                                    apex_cfg_slots[cid] = obs if obs is not None else -1
+                                            except Exception:
+                                                pass
+
                         r_loadouts = monitor_http.request("GET", f"{gg_url}/v1/loadouts")
                         if r_loadouts.status == 200:
                             data = loads(r_loadouts.data.decode("utf-8", errors="replace"))
@@ -2017,7 +2036,46 @@ class DisplayManager:
                                 last_loadout_id = lid
                                 last_loadout_name = lname
                                 last_loadout_trigger_ts = now
-                                self.profile_overlay.trigger(raw_device_name="profile", raw_profile_name=lname)
+
+                                # ONLY trigger overlay for preconfigs (profiles without onboard slots)
+                                apex_cid = None
+                                for c in loadout.get("configs", []):
+                                    cid = c.get("config_id")
+                                    if cid in apex_cfg_slots:
+                                        apex_cid = cid
+                                        break
+
+                                if not apex_cid:
+                                    for c in loadout.get("configs", []):
+                                        if c.get("config_type") == "engine":
+                                            cid = c.get("config_id")
+                                            try:
+                                                r_c = monitor_http.request("GET", f"{eng_url}/configuration/{cid}")
+                                                if r_c.status == 200:
+                                                    c_data = loads(r_c.data.decode("utf-8", errors="replace")).get("configuration", {})
+                                                    if c_data.get("device_type_id") == 159 or "apex_7" in str(c_data):
+                                                        obs = c_data.get("onboard_profile_slot")
+                                                        apex_cfg_slots[cid] = obs if obs is not None else -1
+                                                        apex_cid = cid
+                                                        break
+                                            except Exception:
+                                                pass
+
+                                slot = apex_cfg_slots.get(apex_cid, -1) if apex_cid else -1
+                                if slot is not None and slot >= 0:
+                                    logger.info(f"[PROFILE-MONITOR] Loadout '{lname}' is an onboard slot ({slot}) -> skipping overlay (hardware OSD handles it)")
+                                else:
+                                    logger.info(f"[PROFILE-MONITOR] Loadout '{lname}' is a software preconfig -> triggering native overlay")
+                                    self.profile_overlay.trigger(raw_device_name="profile", raw_profile_name=lname, slot=None)
+                                    # Instantly push first frame to preempt GG default background
+                                    try:
+                                        oled_img = self.profile_overlay.get_image()
+                                        oled_frame = convert_to_bitmap(oled_img)
+                                        if self.steelseries_api.send_frame(oled_frame):
+                                            self._last_sent_frame = oled_frame
+                                            self._last_frame_sent_time = now
+                                    except Exception as e:
+                                        logger.debug(f"[PROFILE-MONITOR] Instant frame dispatch error: {e}")
                 except Exception as e:
                     logger.debug(f"[PROFILE-MONITOR] Active loadout poll error: {e}")
 
@@ -2049,25 +2107,41 @@ class DisplayManager:
                                     logger.debug(f"[PROFILE-MONITOR] Device {dname} switch to '{cfg_name}' suppressed (part of loadout switch)")
                                     continue
 
-                                slot = None
-                                if cfg_name and "config" in cfg_name.lower():
-                                    parts = cfg_name.split()
-                                    if len(parts) >= 2 and parts[-1].isdigit():
+                                if dname == "apex_7":
+                                    slot = apex_cfg_slots.get(cfg_id)
+                                    if slot is None:
                                         try:
-                                            slot = int(parts[-1]) - 1
+                                            r_c = monitor_http.request("GET", f"{eng_url}/configuration/{cfg_id}")
+                                            if r_c.status == 200:
+                                                c_data = loads(r_c.data.decode("utf-8", errors="replace")).get("configuration", {})
+                                                obs = c_data.get("onboard_profile_slot")
+                                                slot = obs if obs is not None else -1
+                                                apex_cfg_slots[cfg_id] = slot
                                         except Exception:
-                                            pass
+                                            slot = -1
 
-                                display_name = cfg_to_loadout.get(cfg_id) or cfg_name
-                                logger.info(f"[PROFILE-MONITOR] Device {dname} configuration changed to '{display_name}' (slot={slot})")
-                                self.profile_overlay.trigger(raw_device_name=dname, raw_profile_name=display_name, slot=slot)
+                                    if slot is not None and slot >= 0:
+                                        logger.debug(f"[PROFILE-MONITOR] Device {dname} switch to onboard slot {slot} ('{cfg_name}') skipped (hardware OSD handles it)")
+                                        continue
+
+                                    display_name = cfg_to_loadout.get(cfg_id) or cfg_name
+                                    logger.info(f"[PROFILE-MONITOR] Device {dname} preconfig changed to '{display_name}'")
+                                    self.profile_overlay.trigger(raw_device_name=dname, raw_profile_name=display_name, slot=None)
+                                    try:
+                                        oled_img = self.profile_overlay.get_image()
+                                        oled_frame = convert_to_bitmap(oled_img)
+                                        if self.steelseries_api.send_frame(oled_frame):
+                                            self._last_sent_frame = oled_frame
+                                            self._last_frame_sent_time = now
+                                    except Exception:
+                                        pass
                 except Exception as e:
                     logger.debug(f"[PROFILE-MONITOR] Connected devices poll error: {e}")
 
                 if initial_sync:
                     initial_sync = False
 
-                sleep(0.5)
+                sleep(0.08)  # 80ms fast poll for near-instant detection
 
             except Exception as e:
                 logger.debug(f"[PROFILE-MONITOR] Loop exception: {e}")

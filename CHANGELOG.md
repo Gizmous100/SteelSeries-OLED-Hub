@@ -4,9 +4,19 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 **Project Versioning Policy:**
 - **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.59`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.60`).
 
 ---
+
+---
+
+## [`v1.60`] — 2026-10-21 — Native-Styled Profile Overlay Restricted to GG Preconfigs & Sub-100ms Instant Dispatch
+### ✨ Fixer (`+0.01`)
+- **Native-Styled Profile Overlay Restricted Exclusively to GG Preconfigs (`src/ProfileOverlay.py`, `src/DisplayManager.py`):**
+  - Resolved double-notification collisions on onboard hardware profile slots (e.g., `Desktop` on Slot 1, `Black Desert` on Slot 2, `Config 3..5` on Slots 3..5): the background monitor now identifies Apex 7's `onboard_profile_slot` (`0..4`) and suppresses our software overlay so only the keyboard MCU's built-in OSD animation appears.
+  - Software preconfigs (game profiles with `onboard_profile_slot == -1`, such as *Battlefield 6* or *World of Warcraft*) that lack hardware OSD notifications cleanly trigger our notification.
+  - Redesigned the visual style to match the keyboard's native built-in OSD: eliminated outer border lines, inverted pill boxes, and divider lines in favor of a minimalist, high-contrast black layout with centered `PROFILE` header and bold game title.
+  - Optimized the polling loop from 500ms down to **80ms** with instant synchronous frame dispatch upon detection, minimizing the window where SteelSeries Engine's deployed background GIF is visible.
 
 ## [`v1.59`] — 2026-10-21 — Real-Time Profile Switch Detection & OLED Overlay Fixer for GG Games and Preconfigs
 ### ✨ Fixer (`+0.01`)

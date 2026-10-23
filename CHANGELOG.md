@@ -4,11 +4,20 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 **Project Versioning Policy:**
 - **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.60`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.61`).
 
 ---
 
 ---
+
+## [`v1.61`] — 2026-10-23 — Silent Background SteelSeries GG Auto-Launch via `SteelSeriesGGEZ` & `-auto=true`
+### ✨ Fixer (`+0.01`)
+- **Silent Background SteelSeries GG Launch (`src/utils.py`, `src/DisplayManager.py`, `src/Systray.py`):**
+  - Resolved an issue where auto-launching SteelSeries GG on system startup or auto-recovery popped up the main SteelSeries GG GUI dashboard window on the desktop.
+  - Updated `find_steelseries_gg_path()` to prioritize `SteelSeriesGGEZ.exe` (SteelSeries' official silent background launcher) before `SteelSeriesGG.exe`.
+  - Appended `-auto=true` flag to startup arguments (`-dataPath="C:\ProgramData\SteelSeries\GG" -dbEnv=production -auto=true`), matching the official Windows startup command line.
+  - Fixed `launch_process()` Win32 `ShellExecuteW` call so `minimized=True` correctly passes `SW_SHOWMINNOACTIVE` (`7`) instead of hardcoded `SW_SHOWNORMAL` (`1`), keeping the launch fully suppressed in the system tray without stealing user focus.
+  - Added `SteelSeriesGGEZ.exe` to process kill and running checks during auto-recovery and database backup restoration.
 
 ## [`v1.60`] — 2026-10-21 — Native-Styled Profile Overlay Restricted to GG Preconfigs & Sub-100ms Instant Dispatch
 ### ✨ Fixer (`+0.01`)

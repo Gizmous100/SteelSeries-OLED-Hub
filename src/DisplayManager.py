@@ -703,7 +703,7 @@ class DisplayManager:
         import subprocess
         try:
             # Force-kill all GG processes
-            for proc_name in ["SteelSeriesGG.exe", "SteelSeriesGGClient.exe"]:
+            for proc_name in ["SteelSeriesGG.exe", "SteelSeriesGGClient.exe", "SteelSeriesGGEZ.exe"]:
                 subprocess.run(
                     ["taskkill", "/F", "/IM", proc_name],
                     capture_output=True,
@@ -715,8 +715,8 @@ class DisplayManager:
             # Relaunch GG
             gg_path = find_steelseries_gg_path()
             if gg_path:
-                args = r'-dataPath="C:\ProgramData\SteelSeries\GG" -dbEnv=production'
-                launch_process(gg_path, args)
+                args = r'-dataPath="C:\ProgramData\SteelSeries\GG" -dbEnv=production -auto=true'
+                launch_process(gg_path, args, minimized=True)
                 logger.info("Auto-Recovery: Relaunched SteelSeries GG")
                 sleep(10)  # Wait for API to come up
             else:
@@ -922,7 +922,7 @@ class DisplayManager:
                          if gg_path:
                              logger.info("SteelSeries GG not found. Auto-launching...")
                              # Launch with same args as official shortcut
-                             args = r'-dataPath="C:\ProgramData\SteelSeries\GG" -dbEnv=production'
+                             args = r'-dataPath="C:\ProgramData\SteelSeries\GG" -dbEnv=production -auto=true'
                              result = launch_process(gg_path, args, minimized=True)
                              logger.info(f"Launch result: {result}")
                              # No blocking wait: the loop re-checks every 2s and

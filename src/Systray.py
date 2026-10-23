@@ -264,7 +264,7 @@ def do_restore_profiles(icon, backup_path):
     IDYES = 6
     IDNO = 7
     
-    gg_processes = ["SteelSeriesGG.exe", "SteelSeriesGGClient.exe", "SteelSeriesEngine3.exe", 
+    gg_processes = ["SteelSeriesGG.exe", "SteelSeriesGGClient.exe", "SteelSeriesGGEZ.exe", "SteelSeriesEngine3.exe", 
                     "SteelSeriesEngine.exe", "SteelSeriesPrism.exe", "SteelSeriesSonar.exe"]
     
     # Step 1: Check if GG is running - if so, ask user to close it

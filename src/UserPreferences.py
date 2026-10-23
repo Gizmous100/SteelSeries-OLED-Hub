@@ -63,7 +63,9 @@ class UserPreferences:
         "weather_city": "Warsaw",
         "weather_aqi_region": "EU",
         "weather_display_time": 5,
-        "hotkey_weather": "Key.f8"
+        "hotkey_weather": "Key.f8",
+        "show_profile_switch_overlay": True,
+        "profile_switch_display_time": 3.5
     }
 
     def __init__(self):

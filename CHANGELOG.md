@@ -8,6 +8,19 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 ---
 
+## [`v1.43`] — 2026-10-23 — Profile Switch Detection, GG Preconfig OLED Overlay & Silent Auto-Launch
+### ✨ Fix / Feature Upgrade (`+0.01`)
+- **Active Profile Priority in Engine Redeploy (`src/SteelSeriesAPI.py`):**
+  - Ensured `active: 1` candidate profile selection strictly precedes `last_deployed: 1` during engine redeploy, preventing accidental fallback to desktop profiles during games like *Black Desert*.
+- **Real-Time Profile Switch Detection & Instant OLED Overlay (`src/DisplayManager.py`, `src/SteelSeriesAPI.py`):**
+  - Sub-100ms detection of game profile changes via continuous SQLite WAL monitoring.
+  - Native-styled 128×40 OLED overlay display for GG preconfigs and game assignments that lack physical onboard animations.
+  - Dedicated configuration section in Settings under Display with test preview button.
+- **Silent Background SteelSeries GG Auto-Launch (`src/SteelSeriesAPI.py`):**
+  - Automatically launches SteelSeries GG minimized via `SteelSeriesGGEZ.exe` or `SteelSeriesGG.exe` with `-auto=true` when GG is not detected running on startup.
+
+---
+
 ## [`v1.42`] — 2026-10-12 — AFK Engine Lighting Coexistence, GUI Hardening & Input Safeguards
 ### ✨ Fix / Feature Upgrade (`+0.01`)
 - **100% Native SteelSeries GG Engine Config Coexistence (`src/SteelSeriesAPI.py`, `src/DisplayManager.py`):**

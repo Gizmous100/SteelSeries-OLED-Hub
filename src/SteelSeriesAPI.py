@@ -25,6 +25,7 @@ class SteelSeriesAPI:
         ]
         self.address = ""
         self.encrypted_address = ""
+        self.gg_encrypted_address = ""
         
         # Use urllib3 PoolManager directly for maximum performance and minimal object churn.
         # requests.Session creates many heavy objects (Headers, CaseInsensitiveDict, etc.)
@@ -91,6 +92,8 @@ class SteelSeriesAPI:
                     self.address = "http://" + data["address"]
                     enc_addr = data.get("encryptedAddress")
                     self.encrypted_address = ("https://" + enc_addr) if enc_addr else ""
+                    gg_enc_addr = data.get("ggEncryptedAddress")
+                    self.gg_encrypted_address = ("https://" + gg_enc_addr) if gg_enc_addr else ""
 
                 # Clean start: register and bind
                 self._lighting_bound = False
@@ -118,6 +121,7 @@ class SteelSeriesAPI:
             logger.info("Resetting SteelSeries connection...")
             self.address = ""
             self.encrypted_address = ""
+            self.gg_encrypted_address = ""
             self._lighting_bound = False
             self._last_lighting_release_ts = 0.0
             # Limit retries during resets to avoid blocking the main thread forever
@@ -184,8 +188,8 @@ class SteelSeriesAPI:
 
                 active_cfg = (
                     next((c for c in cfgs if c.get("active") == 1 and c.get("last_deployed") == 1), None)
-                    or next((c for c in cfgs if c.get("last_deployed") == 1), None)
                     or next((c for c in cfgs if c.get("active") == 1), None)
+                    or next((c for c in cfgs if c.get("last_deployed") == 1), None)
                 )
                 if active_cfg and active_cfg.get("id"):
                     active_cid = active_cfg["id"]

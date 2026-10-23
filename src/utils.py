@@ -217,8 +217,11 @@ def is_process_running(process_names):
 def find_steelseries_gg_path():
     """
     Attempts to locate the SteelSeries GG executable in common installation directories.
+    Prioritizes SteelSeriesGGEZ.exe (silent background launcher) over SteelSeriesGG.exe.
     """
     common_paths = [
+        r"C:\Program Files\SteelSeries\GG\SteelSeriesGGEZ.exe",
+        r"C:\Program Files (x86)\SteelSeries\GG\SteelSeriesGGEZ.exe",
         r"C:\Program Files\SteelSeries\GG\SteelSeriesGG.exe",
         r"C:\Program Files (x86)\SteelSeries\GG\SteelSeriesGG.exe",
         r"C:\Program Files\SteelSeries\SteelSeries Engine 3\SteelSeriesEngine3.exe",
@@ -248,8 +251,8 @@ def launch_process(process_path, arguments=None, minimized=False):
             
         import ctypes
         # ShellExecuteW(hwnd, operation, file, parameters, directory, show_cmd)
-        # SW_SHOWNORMAL = 1 (SW_HIDE/SW_SHOWMINIMIZED don't work with SteelSeries GG)
-        show_cmd = 1
+        # SW_SHOWNORMAL = 1, SW_SHOWMINNOACTIVE = 7
+        show_cmd = 7 if minimized else 1
         
         directory = path.dirname(process_path)
         ret = ctypes.windll.shell32.ShellExecuteW(None, "open", process_path, arguments, directory, show_cmd)

@@ -22,6 +22,21 @@ from src.HIDListener import HIDListener
 from src.utils import is_process_running, find_steelseries_gg_path, launch_process, get_idle_time_ms, get_last_input_info, get_cursor_pos
 import asyncio
 
+import ctypes
+from ctypes import wintypes
+
+class XINPUT_STATE(ctypes.Structure):
+    _fields_ = [
+        ("dwPacketNumber", wintypes.DWORD),
+        ("wButtons", wintypes.WORD),
+        ("bLeftTrigger", ctypes.c_byte),
+        ("bRightTrigger", ctypes.c_byte),
+        ("sThumbLX", ctypes.c_short),
+        ("sThumbLY", ctypes.c_short),
+        ("sThumbRX", ctypes.c_short),
+        ("sThumbRY", ctypes.c_short),
+    ]
+
 logger = logging.getLogger("OLED Customizer")
 
 
@@ -204,8 +219,21 @@ class DisplayManager:
         self._afk_baseline_input_tick = 0
         self._afk_baseline_cursor_pos = get_cursor_pos()
         self._last_hook_input_ms = now_ms
+        self._last_physical_key_ms = now_ms
+        self._last_physical_mouse_click_ms = now_ms
         self._last_cursor_pos = self._afk_baseline_cursor_pos
         self._last_cursor_move_ms = now_ms
+
+        # XInput Gamepad activity tracking
+        try:
+            self._xinput = ctypes.windll.xinput1_4
+        except OSError:
+            try:
+                self._xinput = ctypes.windll.xinput1_3
+            except OSError:
+                self._xinput = None
+        self._last_gamepad_packets = [0, 0, 0, 0]
+        self._last_gamepad_input_ms = now_ms
 
         # Spotify worker thread (single persistent thread instead of spawning new ones)
         self._spotify_queue = Queue(maxsize=1)
@@ -226,7 +254,6 @@ class DisplayManager:
         
         # Diagnostic: Log Admin status
         try:
-            import ctypes
             is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
             logger.info(f"Process Privilege Status: {'ADMIN/UAC' if is_admin else 'USER'}")
             if not is_admin:
@@ -337,6 +364,18 @@ class DisplayManager:
             except Exception:
                 pass
 
+    def _check_gamepad_activity(self) -> bool:
+        if not getattr(self, "_xinput", None):
+            return False
+        activity = False
+        for i in range(4):
+            state = XINPUT_STATE()
+            if self._xinput.XInputGetState(i, ctypes.byref(state)) == 0:
+                if state.dwPacketNumber != self._last_gamepad_packets[i]:
+                    self._last_gamepad_packets[i] = state.dwPacketNumber
+                    activity = True
+        return activity
+
     def _keyboard_hook_loop(self):
         """
         Installs a low-level Windows keyboard hook (WH_KEYBOARD_LL) via ctypes
@@ -372,8 +411,13 @@ class DisplayManager:
             WM_KEYUP = 0x0101
             WM_SYSKEYUP = 0x0105
             
+            WM_LBUTTONDOWN = 0x0201
+            WM_RBUTTONDOWN = 0x0204
+            WM_MBUTTONDOWN = 0x0207
+            WM_MOUSEWHEEL = 0x020A
             WM_XBUTTONDOWN = 0x020B
             WM_XBUTTONUP = 0x020C
+            WM_MOUSEHWHEEL = 0x020E
 
             VK_LCONTROL = 0xA2
             VK_RCONTROL = 0xA3
@@ -493,7 +537,10 @@ class DisplayManager:
 
                         # Track non-injected physical keyboard events (LLKHF_INJECTED = 0x10)
                         if (flags & 0x10) == 0:
-                            self._last_hook_input_ms = int(time() * 1000)
+                            t_now = int(time() * 1000)
+                            self._last_hook_input_ms = t_now
+                            if wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                                self._last_physical_key_ms = t_now
 
                         is_down = wParam in (WM_KEYDOWN, WM_SYSKEYDOWN)
                         is_up = wParam in (WM_KEYUP, WM_SYSKEYUP)
@@ -602,7 +649,12 @@ class DisplayManager:
                         m_flags = ctypes.c_uint32.from_address(addr + 12).value
                         # Track non-injected physical mouse events (LLMHF_INJECTED = 0x01)
                         if (m_flags & 0x01) == 0:
-                            self._last_hook_input_ms = int(time() * 1000)
+                            t_now = int(time() * 1000)
+                            # Only physical button clicks and wheel scrolls register as hook input.
+                            # Raw WM_MOUSEMOVE is excluded to prevent optical sensor micro-jitter from waking AFK.
+                            if wParam in (WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN, WM_XBUTTONDOWN, WM_MOUSEWHEEL, WM_MOUSEHWHEEL):
+                                self._last_hook_input_ms = t_now
+                                self._last_physical_mouse_click_ms = t_now
 
                         if wParam == WM_XBUTTONDOWN:
                             # Read XBUTTON data from memory at lParam + 8
@@ -841,7 +893,7 @@ class DisplayManager:
         self._afk_settled = False
         self._afk_settled_time = now_ms + 1500
         self._afk_baseline_input_tick = last_input_tick
-        self._afk_baseline_cursor_pos = cur_pos
+        self._afk_baseline_cursor_pos = cur_pos if cur_pos != (0, 0) else None
         self._last_cursor_pos = cur_pos
         self._last_sent_frame = None
         logger.info("AFK State changed to: True (triggered via Settings Test AFK button)")
@@ -1083,9 +1135,19 @@ class DisplayManager:
 
             # --- AFK Logic ---
             cur_pos = get_cursor_pos()
-            if cur_pos != self._last_cursor_pos and cur_pos != (0, 0):
-                self._last_cursor_pos = cur_pos
-                self._last_cursor_move_ms = now_ms
+            if cur_pos != (0, 0):
+                if self._last_cursor_pos != (0, 0):
+                    dx = abs(cur_pos[0] - self._last_cursor_pos[0])
+                    dy = abs(cur_pos[1] - self._last_cursor_pos[1])
+                    if dx >= 3 or dy >= 3:
+                        self._last_cursor_pos = cur_pos
+                        self._last_cursor_move_ms = now_ms
+                else:
+                    self._last_cursor_pos = cur_pos
+
+            gamepad_active = self._check_gamepad_activity()
+            if gamepad_active:
+                self._last_gamepad_input_ms = now_ms
 
             if self.user_preferences.get_preference("afk_enabled"):
                 game_blocks_afk = (
@@ -1095,6 +1157,7 @@ class DisplayManager:
                 if game_blocks_afk:
                     self._last_cursor_move_ms = now_ms
                     self._last_hook_input_ms = now_ms
+                    self._last_gamepad_input_ms = now_ms
                     if self._is_afk:
                         self._is_afk = False
                         self._afk_toggled_time = now_ms
@@ -1106,7 +1169,8 @@ class DisplayManager:
                     last_input_tick, win_idle_ms = get_last_input_info()
                     hook_idle_ms = max(0, now_ms - self._last_hook_input_ms) if self._last_hook_input_ms > 0 else win_idle_ms
                     cursor_idle_ms = max(0, now_ms - self._last_cursor_move_ms) if self._last_cursor_move_ms > 0 else win_idle_ms
-                    idle_ms = min(win_idle_ms, hook_idle_ms, cursor_idle_ms)
+                    gamepad_idle_ms = max(0, now_ms - self._last_gamepad_input_ms) if self._last_gamepad_input_ms > 0 else win_idle_ms
+                    idle_ms = min(win_idle_ms, hook_idle_ms, cursor_idle_ms, gamepad_idle_ms)
 
                     if not self._is_afk:
                         # User is currently active: enter AFK when idle time exceeds timeout
@@ -1116,7 +1180,7 @@ class DisplayManager:
                             self._afk_settled = False
                             self._afk_settled_time = now_ms + 1500
                             self._afk_baseline_input_tick = last_input_tick
-                            self._afk_baseline_cursor_pos = cur_pos
+                            self._afk_baseline_cursor_pos = cur_pos if cur_pos != (0, 0) else None
                             self._last_sent_frame = None
                             logger.info(f"AFK State changed to: True (idle: {idle_ms}ms >= {self._afk_timeout_ms}ms)")
                             self._sync_lighting_state()
@@ -1134,21 +1198,36 @@ class DisplayManager:
                                 self._afk_settled = True
                                 self._afk_settled_time = now_ms
                                 self._afk_baseline_input_tick = last_input_tick
-                                self._afk_baseline_cursor_pos = cur_pos
+                                self._afk_baseline_cursor_pos = cur_pos if cur_pos != (0, 0) else None
                         else:
-                            # Once settled, ANY fresh mouse movement, click, or keypress wakes from AFK
-                            if (
-                                last_input_tick != self._afk_baseline_input_tick
-                                or idle_ms < 1000
-                                or self._last_hook_input_ms > self._afk_settled_time
-                                or self._last_cursor_move_ms > self._afk_settled_time
-                                or (cur_pos != self._afk_baseline_cursor_pos and cur_pos != (0, 0))
-                            ):
+                            # Once settled, wake strictly on genuine user actions:
+                            # 1. Any physical keyboard keypress
+                            # 2. Any physical mouse button click or wheel scroll
+                            # 3. Gamepad activity
+                            # 4. Intentional mouse movement (>= 10 pixels from baseline)
+                            wake_reason = None
+                            if self._last_physical_key_ms > self._afk_settled_time:
+                                wake_reason = "keyboard keypress"
+                            elif self._last_physical_mouse_click_ms > self._afk_settled_time:
+                                wake_reason = "mouse click/wheel"
+                            elif gamepad_active:
+                                wake_reason = "gamepad activity"
+                            elif cur_pos != (0, 0):
+                                if self._afk_baseline_cursor_pos is None:
+                                    # Baseline wasn't available at settle time (e.g. screen off); latch it now
+                                    self._afk_baseline_cursor_pos = cur_pos
+                                else:
+                                    dist_x = abs(cur_pos[0] - self._afk_baseline_cursor_pos[0])
+                                    dist_y = abs(cur_pos[1] - self._afk_baseline_cursor_pos[1])
+                                    if dist_x >= 10 or dist_y >= 10:
+                                        wake_reason = f"mouse movement (dx={dist_x}, dy={dist_y})"
+
+                            if wake_reason:
                                 self._is_afk = False
                                 self._afk_toggled_time = now_ms
                                 self._afk_settled = False
                                 self._last_sent_frame = None
-                                logger.info("AFK State changed to: False (woken by user input)")
+                                logger.info(f"AFK State changed to: False (woken by {wake_reason})")
                                 self._sync_lighting_state()
             else:
                 if self._is_afk:

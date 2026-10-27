@@ -8,6 +8,19 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 ---
 
+## [`v1.44`] — 2026-10-27 — AFK Sensor Deadband, Screen Sleep Guard & Precise Input Tracking
+### ✨ Fix / Feature Upgrade (`+0.01`)
+- **Optical Sensor Jitter Deadband (`src/DisplayManager.py`):**
+  - Implemented 15-pixel Euclidean displacement deadband (`math.hypot(dx, dy) >= 15.0`) to filter out microscopic optical sensor jitter on high-DPI mouse sensors (such as SteelSeries TrueMove Air).
+- **Display Sleep / Blanking Guard (`src/DisplayManager.py`):**
+  - Prevents spurious input wakeups triggered when Windows turns off displays or enters monitor standby.
+- **Click-Only Low-Level Mouse Hook (`src/DisplayManager.py`):**
+  - Restricted `WH_MOUSE_LL` hook to mouse clicks and wheel scrolling, leaving coordinate displacement to the deadband filter.
+- **Integrated Controller Support for AFK Detection (`src/DisplayManager.py`):**
+  - Directly integrated XInput state checks into `DisplayManager` to streamline controller responsiveness.
+
+---
+
 ## [`v1.43`] — 2026-10-23 — Profile Switch Detection, GG Preconfig OLED Overlay & Silent Auto-Launch
 ### ✨ Fix / Feature Upgrade (`+0.01`)
 - **Active Profile Priority in Engine Redeploy (`src/SteelSeriesAPI.py`):**

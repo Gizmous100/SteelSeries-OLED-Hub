@@ -4,11 +4,21 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 **Project Versioning Policy:**
 - **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.61`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.62`).
 
 ---
 
 ---
+
+## [`v1.62`] — 2026-10-27 — AFK False Wake-Up Elimination (Optical Sensor Deadband, Screen Sleep Guard & Precise Input Tracking)
+### ✨ Fixer (`+0.01`)
+- **AFK False Wake-Up Elimination (`src/DisplayManager.py`):**
+  - Resolved an issue where AFK mode woke up spontaneously after 2–30 seconds due to optical mouse sensor noise and Windows display power-down states.
+  - **Mouse Movement Deadband**: Replaced zero-tolerance coordinate comparison (`cur_pos != baseline`) with a 10-pixel Euclidean deadband (`dist_x >= 10 or dist_y >= 10`) for waking from AFK, and a 3-pixel filter during active usage. Optical sensor micro-jitter (1–2 px) on cloth pads/desks no longer triggers false wake-ups.
+  - **Display Sleep & `(0, 0)` Guard**: Handled Win32 `GetCursorPos` returning `(0, 0)` with `ERROR_ACCESS_DENIED` (code 5) when monitors enter DP/DVI power-save or UAC secure desktop. Baseline coordinates are safely latched only when coordinates are valid (`!= (0, 0)`), preventing the instant 2-second wake-up loop.
+  - **Click/Wheel Only Hook Input**: Updated low-level mouse hook (`_mouse_hook_callback`) to ignore raw `WM_MOUSEMOVE` and only register genuine physical button clicks and wheel turns (`WM_LBUTTONDOWN`, `WM_RBUTTONDOWN`, `WM_MBUTTONDOWN`, `WM_XBUTTONDOWN`, `WM_MOUSEWHEEL`).
+  - **Native XInput Gamepad Support**: Added XInput polling in `DisplayManager` so physical gamepad stick/button activity keeps the system awake and wakes from AFK.
+  - **Granular Wake Logging**: Replaced generic `woken by user input` with specific diagnostics (`woken by keyboard keypress`, `woken by mouse click/wheel`, `woken by mouse movement (dx=..., dy=...)`, `woken by gamepad activity`).
 
 ## [`v1.61`] — 2026-10-23 — Silent Background SteelSeries GG Auto-Launch via `SteelSeriesGGEZ` & `-auto=true`
 ### ✨ Fixer (`+0.01`)

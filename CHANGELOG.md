@@ -4,11 +4,31 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 **Project Versioning Policy:**
 - **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.62`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.63`).
 
 ---
 
 ---
+
+## [`v1.64`] — 2026-10-29 — AFK SSL Module Import & Universal Wake-Up Guard (Reliable Wake via Windows Input Fallback)
+### ✨ Fixer (`+0.01`)
+- **AFK SSL Module Import & Engine API Reliability (`src/SteelSeriesAPI.py`):**
+  - **Module-Level Imports**: Added top-level `import ssl` and `import urllib.request` to `src/SteelSeriesAPI.py`. Previously, these libraries were only imported locally inside `_redeploy_active_engine_configs()`, triggering `NameError: name 'ssl' is not defined` when `_blackout_mouse_configs()` or `_restore_mouse_configs()` executed during AFK transitions.
+  - **Flawless Mouse Blackout**: With module-level imports restored, the encrypted REST API calls (`/configuration/<cid>` and `/configuration/<cid>/forceDeploy`) successfully zero out `global_brightness` and clear RGB sequences on connected mice (e.g. Rival 5), achieving complete blackout `[0, 0, 0]` without errors.
+- **Universal AFK Wake-Up Fallback Guard (`src/DisplayManager.py`):**
+  - **Session & Coordinate Independence**: Added a fallback check using kernel-level Win32 `GetLastInputInfo`:
+    `elif (win_idle_ms < 500) and (last_input_tick > self._afk_baseline_input_tick) and ((now_ms - self._afk_settled_time) > 1000)`
+    This ensures that any genuine user input (mouse move, click, or keystroke) immediately wakes the application from AFK even when cursor coordinates report `(0, 0)` (e.g., monitor DP/DVI power-off, non-interactive stations, or fullscreen exclusive mode) or when low-level hooks are bypassed.
+
+## [`v1.63`] — 2026-10-29 — AFK Native Mouse Blackout & GameSense Isolation (Eliminated Rival 5 Factory Orange Fallback)
+### ✨ Fixer (`+0.01`)
+- **AFK Native Mouse Blackout & GameSense Isolation (`src/SteelSeriesAPI.py`, `src/DisplayManager.py`):**
+  - **Root Cause Resolution**: Resolved an issue where the SteelSeries Rival 5 (and other multi-zone composite mice) illuminated in bright SteelSeries factory orange (`#FC4E02` / `[255, 24, 0]`) upon entering AFK mode instead of turning completely black (`[0, 0, 0]`).
+  - **GameSense Composite Zone Exclusion**: SteelSeries GG Engine has no GameSense Lisp dispatcher support for 10-zone composite mice. When GameSense bound composite/zoned handlers, `generic-initializer.lsp` invoked `use-zone:` on the Rival 5, placing it into GameSense control while lacking handlers to paint its 10 addressable LED segments, leaving it permanently frozen on the factory orange fallback.
+  - **Separation of Concerns**: Restructured `_bind_lighting_event()` to bind GameSense `LIGHTING` exclusively on keyboard zones (`rgb-per-key-zones` and `keyboard`), guaranteeing that GameSense never claims mouse composite zones.
+  - **Direct Native Engine Configuration Deployment**: Implemented `_blackout_mouse_configs()` and `_restore_mouse_configs()` using SteelSeries GG Engine's encrypted REST API (`/configuration/<cid>/forceDeploy`). During AFK mode, mouse `global_brightness` is set to 0, `default_lighting_enabled` to 0, and color sequences are zeroed, achieving true 100% hardware blackout (`[0, 0, 0]`) across all 10 Rival 5 zones.
+  - **Instant Clean Wake-Up Restoration**: Exiting AFK mode cleanly restores original mouse profile settings (e.g. user-configured blue `[27, 54, 207]`) via `forceDeploy` and destroys the keyboard's temporary GameSense sandbox, ensuring seamless profile continuity without mouse lockups.
+  - **Render Loop Rate-Limit Guard**: Added a 3.0-second attempt cooldown and state guard to `_sync_lighting_state()` in `DisplayManager`, eliminating 10 FPS retry loops and preventing `HTTP 429 Too Many Requests` errors.
 
 ## [`v1.62`] — 2026-10-27 — AFK False Wake-Up Elimination (Optical Sensor Deadband, Screen Sleep Guard & Precise Input Tracking)
 ### ✨ Fixer (`+0.01`)

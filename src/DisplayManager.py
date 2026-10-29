@@ -908,17 +908,20 @@ class DisplayManager:
     def _sync_lighting_state(self):
         """
         0 = AFK blackout ([0, 0, 0] on keyboard and mouse)
-        1 = Active (LIGHTING event unbound so SteelSeries GG Engine controls colors natively)
+        1 = Active (LIGHTING event unbound and native SteelSeries GG Engine colors restored)
         """
+        now = time()
         target_lighting = 0 if self._is_afk else 1
         if self._last_lighting_state != target_lighting:
+            if now - getattr(self, "_last_lighting_attempt_ts", 0.0) < 3.0:
+                return
+            self._last_lighting_attempt_ts = now
             try:
                 if self.steelseries_api.set_lighting(not self._is_afk):
                     self._last_lighting_state = target_lighting
                 else:
-                    self._last_lighting_state = None
+                    logger.debug("set_lighting returned False, will retry in 3s")
             except Exception as e:
-                self._last_lighting_state = None
                 logger.debug(f"Failed to set lighting state: {e}")
 
     # _parse_key removed — replaced by _key_str_to_vk and _reload_hotkey_vks above
@@ -1011,8 +1014,9 @@ class DisplayManager:
 
             now_ms = int(now_sec * 1000)
 
-            # 0) AFK lighting state sync
-            self._sync_lighting_state()
+            # 0) AFK lighting state sync (only on pending state mismatch)
+            if self._last_lighting_state != (0 if self._is_afk else 1):
+                self._sync_lighting_state()
 
             # 1) YT poll (hızlı)
             self.volume_overlay.update()
@@ -1221,6 +1225,8 @@ class DisplayManager:
                                     dist_y = abs(cur_pos[1] - self._afk_baseline_cursor_pos[1])
                                     if dist_x >= 10 or dist_y >= 10:
                                         wake_reason = f"mouse movement (dx={dist_x}, dy={dist_y})"
+                            elif (win_idle_ms < 500) and (last_input_tick > self._afk_baseline_input_tick) and ((now_ms - self._afk_settled_time) > 1000):
+                                wake_reason = f"user input detected (idle={win_idle_ms}ms)"
 
                             if wake_reason:
                                 self._is_afk = False

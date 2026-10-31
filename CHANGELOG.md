@@ -10,6 +10,20 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 ---
 
+## [`v1.65`] — 2026-10-30 — Wireless Headset HID Discovery Hardening & Dual-Device AFK Blackout (Keyboard & Mouse)
+### ✨ Fixer (`+0.01`)
+- **Wireless Headset HID Discovery Hardening (`src/HIDListener.py`):**
+  - **Root Cause Resolution**: Resolved an issue where the headset battery indicator on the OLED clock disappeared after startup or standby. Because SteelSeries keyboards (e.g. Apex 7, `PID 0x1612`) and mice share the SteelSeries vendor ID (`VID 0x1038`), temporary unresponsiveness or sleep of the wireless headset dongle (`PID 0x22a1`) caused the fallback discovery algorithm to latch onto the Apex 7 keyboard (`PID 0x1612`) as a "headset" endpoint. Once connected to the keyboard, the reader thread never errored out or re-scanned, locking the battery monitor into a dead state.
+  - **Strict Candidate Filtering**: Added hardware PID validation in registry enumeration and candidate priority: all non-headset SteelSeries devices (`PID 0x16xx` keyboards, `PID 0x18xx` mice, and accessories) are strictly excluded from headset discovery.
+  - **Instant Headset Latch & Priority Return**: Enabled direct short-circuit return when `MI_03` is discovered on SteelSeries headsets with read/write access, mirroring the `COL05` pattern for Cloud III.
+  - **Dynamic Reconnection & Error Recovery**: If `ReadFile` or `CreateFileW` encounters a disconnection error (error codes 2, 3, 6, 55, 1167), `self.device_path` is immediately set to `None`, triggering an automatic background re-scan that seamlessly reconnects as soon as the headset transceiver becomes available.
+  - **Instant Initial Battery Query**: Added an immediate `query_battery()` dispatch upon connection in `_listen_loop`, eliminating the initial 5-to-15 second delay before the battery level first appears on the OLED display.
+- **Unified Dual-Device AFK Blackout (`src/SteelSeriesAPI.py`):**
+  - **Root Cause Resolution**: Resolved an issue where the SteelSeries Apex 7 keyboard backlight remained illuminated upon entering AFK mode even though the mouse and OLED screen properly turned off. In GameSense 3, handlers using `device-type: rgb-per-key-zones` with `zone: all` require `mode: bitmap` rather than `mode: color`; when `mode: color` was passed, the Lisp engine marked the keyboard device as handled without applying LED colors, simultaneously preventing the secondary `device-type: keyboard` handler from executing.
+  - **Dual Native Engine Configuration Blackout (`_blackout_device_configs`)**: Expanded the encrypted REST API deployment (`/configuration/<cid>/forceDeploy`) beyond mice to all connected SteelSeries keyboards. Active keyboard configurations have `global_brightness` set to 0, `lighting_config` (foundation, idle, and reactive graphics) cleared, individual zone colors set to `[0, 0, 0]`, `idle_mode_dimmer` zeroed, and `lock_key_color` zeroed.
+  - **Bitmap Event Fallback**: Corrected GameSense `LIGHTING` handler on `rgb-per-key-zones` to use `mode: bitmap` with a full 132-key zero matrix (`[[0, 0, 0]] * 132`) alongside generic keyboard color handlers.
+  - **Symmetric Exiting & Restoration (`_restore_device_configs`)**: Waking from AFK seamlessly restores original configuration structures for both keyboard and mouse, followed by `_redeploy_engine_active_configs()` to maintain complete profile integrity.
+
 ## [`v1.64`] — 2026-10-29 — AFK SSL Module Import & Universal Wake-Up Guard (Reliable Wake via Windows Input Fallback)
 ### ✨ Fixer (`+0.01`)
 - **AFK SSL Module Import & Engine API Reliability (`src/SteelSeriesAPI.py`):**

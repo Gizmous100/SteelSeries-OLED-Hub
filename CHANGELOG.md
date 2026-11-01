@@ -8,6 +8,23 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 ---
 
+## [`v1.45`] — 2026-11-01 — Dual-Device AFK Blackout, Headset Battery HID Discovery & Gamepad Play Compatibility
+### ✨ Fix / Feature Upgrade (`+0.01`)
+- **Flicker-Free AFK Wake-Up & Atomic Single-Pass Profile Restore (`src/SteelSeriesAPI.py`):**
+  - Resolved keyboard LED flickering upon AFK wake-up by making encrypted REST hardware configuration blackout primary, eliminating GameSense Lisp VM `device reset:` churn.
+  - Single atomic `forceDeploy` pass restores user profiles smoothly with zero flashing.
+- **AFK Mode Compatibility During Gamepad Play & Controller Decoupling (`src/DisplayManager.py`):**
+  - Resolved issue where gamepad USB polling prevented AFK blackout even with in-game suppression disabled.
+  - Decoupled gamepad telemetry so keyboard, mouse, and OLED enter power-saving blackout during controller gameplay, waking strictly on physical keyboard/mouse input.
+- **Wireless Headset HID Discovery Hardening (`src/HIDListener.py`):**
+  - Eliminated false latching onto keyboards/mice by implementing multi-stage candidate scoring (Product String matching `Arctis`, `Nova`, `Headset`; PID exclusion for known keyboards/mice; usage page validation).
+  - Resilient periodic re-discovery reconnects to headsets after waking from sleep or dongle reconnection.
+- **AFK Mouse Blackout & SSL Module Import Fix (`src/SteelSeriesAPI.py`):**
+  - Moved `ssl` and `urllib3` imports to module scope to eliminate runtime `ImportError: cannot import name 'ssl'` inside low-memory worker threads, ensuring reliable native blackout for all devices.
+  - Universal wake-up guard ensures instantaneous lighting restoration even under high CPU load.
+
+---
+
 ## [`v1.44`] — 2026-10-27 — AFK Sensor Deadband, Screen Sleep Guard & Precise Input Tracking
 ### ✨ Fix / Feature Upgrade (`+0.01`)
 - **Optical Sensor Jitter Deadband (`src/DisplayManager.py`):**

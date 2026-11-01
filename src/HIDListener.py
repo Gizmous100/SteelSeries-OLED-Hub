@@ -93,7 +93,7 @@ class HIDListener(threading.Thread):
                 if "MI_04" in upper:
                     return -9
                 return -8
-            return 10 # Avoid selecting keyboard/mouse for headset HID Sync
+            return 999 # Non-headset SteelSeries devices (keyboards/mice) must never be selected
 
         if "COL05" in upper:
             return 0
@@ -172,6 +172,9 @@ class HIDListener(threading.Thread):
 
                 i += 1
                 upper_key = device_instance_key.upper()
+                # Exclude non-headset SteelSeries devices (keyboards PID 16xx, mice PID 18xx, accessories)
+                if "VID_1038" in upper_key and not ("PID_22" in upper_key or "PID_12" in upper_key):
+                    continue
                 if not any(marker in upper_key for marker in DEVICE_MARKERS):
                     continue
 
@@ -247,7 +250,15 @@ class HIDListener(threading.Thread):
                 if score == 2 and "COL05" in candidate.upper():
                     return candidate
 
+                # MI_03 with read+write is the known-good path for SteelSeries headsets (e.g. Arctis Nova 7).
+                if score == 2 and "VID_1038" in candidate.upper() and "MI_03" in candidate.upper():
+                    return candidate
+
             if best_path:
+                upper_best = best_path.upper()
+                if "VID_1038" in upper_best and not ("PID_22" in upper_best or "PID_12" in upper_best):
+                    logger.warning("HID Discovery: Rejected non-headset SteelSeries candidate: %s", best_path)
+                    return None
                 logger.info("HID Discovery: Selected fallback path: %s", best_path)
                 return best_path
 
@@ -271,9 +282,11 @@ class HIDListener(threading.Thread):
 
         self.device_path = self.find_device_path()
         if self.device_path:
-            logger.info("HID Discovery: Found Cloud III at %s", self.device_path)
+            is_ss = "VID_1038" in self.device_path.upper()
+            model = "SteelSeries Headset" if is_ss else "HyperX Cloud III"
+            logger.info("HID Discovery: Found %s at %s", model, self.device_path)
         else:
-            logger.warning("HID Discovery: Cloud III Wireless not found")
+            logger.warning("HID Discovery: Headset not found (will retry in background)")
 
         self.thread = threading.Thread(target=self._listen_loop, daemon=True)
         self.thread.start()
@@ -294,8 +307,10 @@ class HIDListener(threading.Thread):
             return None
         if (time() - self._battery_ts) > self.BATTERY_STALE_AFTER:
             if self.battery_percent is not None:
-                logger.info("Cloud III battery: no reply for %.0fs — headset "
-                            "appears off, hiding indicator", self.BATTERY_STALE_AFTER)
+                is_ss = "VID_1038" in self.device_path.upper()
+                model = "SteelSeries" if is_ss else "Cloud III"
+                logger.info("%s battery: no reply for %.0fs — headset appears off, hiding indicator",
+                            model, self.BATTERY_STALE_AFTER)
                 self.battery_percent = None
             return None
         return self.battery_percent
@@ -318,7 +333,10 @@ class HIDListener(threading.Thread):
             handle = CreateFileW(self.device_path, GENERIC_WRITE,
                                  SHARE_READ_WRITE, None, OPEN_EXISTING, 0, None)
         if handle == INVALID_HANDLE_VALUE:
-            logger.debug("HID Battery: cannot open write handle, err=%s", ctypes.get_last_error())
+            err = ctypes.get_last_error()
+            logger.debug("HID Battery: cannot open write handle, err=%s", err)
+            if err in (2, 3, 6, 55, 1167):
+                self.device_path = None
             return False
 
         try:
@@ -569,11 +587,18 @@ class HIDListener(threading.Thread):
                             # button stopped working); the 400ms echo debounce
                             # below already filters our own write's echo.
                             self._write_reopen = False
-                            logger.debug("Cloud III HID: Reopened after host write (no settle blackout)")
+                            logger.debug("Headset HID: Reopened after host write (no settle blackout)")
                         else:
-                            logger.info("Cloud III HID: Connected for reading")
+                            is_ss = "VID_1038" in self.device_path.upper()
+                            model = "SteelSeries Headset" if is_ss else "HyperX Cloud III"
+                            logger.info("%s HID: Connected for reading", model)
                             # Initial Sync Settle: ignore the connection flurry
                             self._suppress_until = time() + 2.0
+                            # Prompt initial battery status immediately
+                            try:
+                                self.query_battery()
+                            except Exception:
+                                pass
                         reconnect_delay = 1
                     else:
                         logger.debug("HID Discovery: Read handle open failed, err=%s", ctypes.get_last_error())
@@ -602,9 +627,7 @@ class HIDListener(threading.Thread):
                         if self._handle:
                             CloseHandle(self._handle)
                             self._handle = None
-                    # If device got unplugged/re-enumerated, force discovery.
-                    if err in (2, 3, 6, 1167):
-                        self.device_path = None
+                    self.device_path = None
                     sleep(1)
                     continue
 

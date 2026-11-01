@@ -908,17 +908,20 @@ class DisplayManager:
     def _sync_lighting_state(self):
         """
         0 = AFK blackout ([0, 0, 0] on keyboard and mouse)
-        1 = Active (LIGHTING event unbound so SteelSeries GG Engine controls colors natively)
+        1 = Active (LIGHTING event unbound and native SteelSeries GG Engine colors restored)
         """
+        now = time()
         target_lighting = 0 if self._is_afk else 1
         if self._last_lighting_state != target_lighting:
+            if now - getattr(self, "_last_lighting_attempt_ts", 0.0) < 3.0:
+                return
+            self._last_lighting_attempt_ts = now
             try:
                 if self.steelseries_api.set_lighting(not self._is_afk):
                     self._last_lighting_state = target_lighting
                 else:
-                    self._last_lighting_state = None
+                    logger.debug("set_lighting returned False, will retry in 3s")
             except Exception as e:
-                self._last_lighting_state = None
                 logger.debug(f"Failed to set lighting state: {e}")
 
     # _parse_key removed — replaced by _key_str_to_vk and _reload_hotkey_vks above
@@ -1011,8 +1014,9 @@ class DisplayManager:
 
             now_ms = int(now_sec * 1000)
 
-            # 0) AFK lighting state sync
-            self._sync_lighting_state()
+            # 0) AFK lighting state sync (only on pending state mismatch)
+            if self._last_lighting_state != (0 if self._is_afk else 1):
+                self._sync_lighting_state()
 
             # 1) YT poll (hızlı)
             self.volume_overlay.update()
@@ -1145,10 +1149,6 @@ class DisplayManager:
                 else:
                     self._last_cursor_pos = cur_pos
 
-            gamepad_active = self._check_gamepad_activity()
-            if gamepad_active:
-                self._last_gamepad_input_ms = now_ms
-
             if self.user_preferences.get_preference("afk_enabled"):
                 game_blocks_afk = (
                     bool(self.user_preferences.get_preference("afk_disable_in_games"))
@@ -1157,7 +1157,6 @@ class DisplayManager:
                 if game_blocks_afk:
                     self._last_cursor_move_ms = now_ms
                     self._last_hook_input_ms = now_ms
-                    self._last_gamepad_input_ms = now_ms
                     if self._is_afk:
                         self._is_afk = False
                         self._afk_toggled_time = now_ms
@@ -1169,11 +1168,10 @@ class DisplayManager:
                     last_input_tick, win_idle_ms = get_last_input_info()
                     hook_idle_ms = max(0, now_ms - self._last_hook_input_ms) if self._last_hook_input_ms > 0 else win_idle_ms
                     cursor_idle_ms = max(0, now_ms - self._last_cursor_move_ms) if self._last_cursor_move_ms > 0 else win_idle_ms
-                    gamepad_idle_ms = max(0, now_ms - self._last_gamepad_input_ms) if self._last_gamepad_input_ms > 0 else win_idle_ms
-                    idle_ms = min(win_idle_ms, hook_idle_ms, cursor_idle_ms, gamepad_idle_ms)
+                    idle_ms = min(win_idle_ms, hook_idle_ms, cursor_idle_ms)
 
                     if not self._is_afk:
-                        # User is currently active: enter AFK when idle time exceeds timeout
+                        # User is currently active: enter AFK when keyboard & mouse idle time exceeds timeout
                         if idle_ms >= self._afk_timeout_ms:
                             self._is_afk = True
                             self._afk_toggled_time = now_ms
@@ -1200,18 +1198,18 @@ class DisplayManager:
                                 self._afk_baseline_input_tick = last_input_tick
                                 self._afk_baseline_cursor_pos = cur_pos if cur_pos != (0, 0) else None
                         else:
-                            # Once settled, wake strictly on genuine user actions:
+                            # Once settled, wake strictly on genuine keyboard/mouse user actions:
                             # 1. Any physical keyboard keypress
                             # 2. Any physical mouse button click or wheel scroll
-                            # 3. Gamepad activity
-                            # 4. Intentional mouse movement (>= 10 pixels from baseline)
+                            # 3. Intentional mouse movement (>= 10 pixels from baseline)
+                            # 4. Fallback user input
+                            # (Gamepad/controller input intentionally does NOT block AFK or wake keyboard/mouse
+                            # when 'Disable Idle / AFK Mode During Games' is disabled in preferences).
                             wake_reason = None
                             if self._last_physical_key_ms > self._afk_settled_time:
                                 wake_reason = "keyboard keypress"
                             elif self._last_physical_mouse_click_ms > self._afk_settled_time:
                                 wake_reason = "mouse click/wheel"
-                            elif gamepad_active:
-                                wake_reason = "gamepad activity"
                             elif cur_pos != (0, 0):
                                 if self._afk_baseline_cursor_pos is None:
                                     # Baseline wasn't available at settle time (e.g. screen off); latch it now
@@ -1221,6 +1219,8 @@ class DisplayManager:
                                     dist_y = abs(cur_pos[1] - self._afk_baseline_cursor_pos[1])
                                     if dist_x >= 10 or dist_y >= 10:
                                         wake_reason = f"mouse movement (dx={dist_x}, dy={dist_y})"
+                            elif (win_idle_ms < 500) and (last_input_tick > self._afk_baseline_input_tick) and ((now_ms - self._afk_settled_time) > 1000):
+                                wake_reason = f"user input detected (idle={win_idle_ms}ms)"
 
                             if wake_reason:
                                 self._is_afk = False

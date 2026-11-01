@@ -2,7 +2,7 @@
 
 **The ultimate music, hardware, weather, headset battery, and RGB ambiance dashboard for your SteelSeries Keyboard & Peripherals.**
 
-![Version](https://img.shields.io/badge/version-1.44-blue?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-1.45-blue?style=for-the-badge)
 ![Author](https://img.shields.io/badge/author-gizmous-orange?style=for-the-badge)
 ![Vibe Coded](https://img.shields.io/badge/100%25-vibe_coded-blueviolet?style=for-the-badge)
 ![Inspired By](https://img.shields.io/badge/inspired_by-OLED_Customizer_(0z--zy)-lightgrey?style=for-the-badge)
@@ -13,7 +13,7 @@
 
 > [!NOTE]
 > ### 💡 Inspiration, Project Heritage & 100% Vibe-Coded Edition
-> **SteelSeries OLED & RGB Hub (`v1.44`)** is **heavily inspired by the original [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) created by [0z-zy](https://github.com/0z-zy)** (and the foundational [SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker) by **[Firewee](https://github.com/Firewee)**).  
+> **SteelSeries OLED & RGB Hub (`v1.45`)** is **heavily inspired by the original [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) created by [0z-zy](https://github.com/0z-zy)** (and the foundational [SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker) by **[Firewee](https://github.com/Firewee)**).  
 > It **retains and includes all features of the original application** (Spotify & Windows SMTC media dashboard, CPU/GPU/RAM/FPS Ghost-Monitor, adaptive volume control, Discord RPC & global mic mute, OLED calculator, 4 clock themes, and SteelSeries profile backups), while being significantly expanded by **[gizmous](https://github.com/Gizmous100)** with brand-new wireless headset battery telemetry, live weather & multi-region global AQI, 9-language OLED localization, smart AFK power-saving with in-game suppression, 10-zone mouse RGB & profile sync, and anti-jitter adaptive rendering.  
 > ✨ **This application and all of its expansions were 100% vibe-coded in their entirety.**
 
@@ -31,7 +31,7 @@
   - [7. 🎬 Streaming & Video Playback Hysteresis (Prime Video / Netflix)](#7--streaming--video-playback-hysteresis-prime-video--netflix)
   - [8. 🛡️ Fault-Tolerant Architecture & Stability Hardening](#8-️-fault-tolerant-architecture--stability-hardening)
   - [9. 🎯 Real-Time Profile Switch Detection & OLED Overlay (Fixer)](#9--real-time-profile-switch-detection--oled-overlay-fixer)
-- [📈 Version History (`v1.00` → `v1.44`)](#-version-history-v100--v144)
+- [📈 Version History (`v1.00` → `v1.45`)](#-version-history-v100--v145)
 - [🚀 Complete Feature Overview](#-complete-feature-overview)
   - [🎵 Dynamic Media Dashboard](#-dynamic-media-dashboard)
   - [🌡️ Ghost-Monitor (Hardware Stats & FPS)](#️-ghost-monitor-hardware-stats--fps)
@@ -50,7 +50,7 @@
 
 ## 🆕 Major New Features & Expansions (by gizmous)
 
-Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.44`)** introduces **4 major new functional modules (`+0.40`)** and **4 core architectural & UX upgrades (`+0.04`)**:
+Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.45`)** introduces **4 major new functional modules (`+0.40`)** and **5 core architectural & UX upgrades (`+0.05`)**:
 
 ### 1. 🎧 Wireless Headset Battery & Native USB HID Telemetry
 - **Direct USB HID Battery Readout**: Communicates directly with SteelSeries USB wireless transceivers via native Win32 HID reports (`[0x06, 0xb0]`) to read real-time battery levels for **SteelSeries Arctis Nova 7** (as well as compatible Cloud III / HyperX wireless headsets) without relying on heavy background services.
@@ -118,7 +118,7 @@ Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.44`)
 
 ---
 
-## 📈 Version History (`v1.00` → `v1.44`)
+## 📈 Version History (`v1.00` → `v1.45`)
 
 > 📄 **For a complete, detailed description of all changes since the beginning of the project, see [`CHANGELOG.md`](CHANGELOG.md).**
 
@@ -133,6 +133,7 @@ Compared to the original OLED Customizer, **SteelSeries OLED & RGB Hub (`v1.44`)
 | **`v1.42`** | ✨ Fix / Feature Upgrade (`+0.01`) | **AFK Engine Lighting Coexistence, GUI Hardening & Input Safeguards** (native GG config restoration, in-game AFK suppression, Tcl/Tk crash fix, clock mute/deafen icons, isolated AFK RGB GameSense architecture, Apex 7 onboard timeout override & triple-redundant input tracking). |
 | **`v1.43`** | ✨ Fix / Feature Upgrade (`+0.01`) | **Profile Switch Detection, GG Preconfig OLED Overlay & Silent Auto-Launch** (active profile priority in redeploy, real-time profile switch detection & instant OLED overlay for GG preconfigs, silent background launch via `SteelSeriesGGEZ`). |
 | **`v1.44`** | ✨ Fix / Feature Upgrade (`+0.01`) | **AFK Sensor Deadband, Screen Sleep Guard & Precise Input Tracking** (optical sensor deadband, display sleep guard, click-only hook and gamepad support). |
+| **`v1.45`** | ✨ Fix / Feature Upgrade (`+0.01`) | **Dual-Device AFK Blackout, Headset Battery HID Discovery & Gamepad Play Compatibility** (native encrypted REST blackout for keyboard/mouse, zero-flicker atomic profile restore, wireless headset HID discovery hardening, decoupled controller AFK idle). |
 
 ---
 
@@ -247,7 +248,7 @@ SteelSeries_OLED_Hub/
 ├── LICENSE                      # MIT License (gizmous & original copyright 0z-zy / Firewee)
 ├── README.md                    # Project documentation
 ├── main.py                      # Application entry point & single-instance guard
-├── version.py                   # Version (1.44) and author metadata
+├── version.py                   # Version (1.45) and author metadata
 ├── version_info.py              # Windows executable version metadata
 ├── SteelSeries-OLED-Hub.spec    # PyInstaller build specification
 ├── requirements.txt             # Python dependencies
@@ -262,12 +263,12 @@ SteelSeries_OLED_Hub/
 
 ## 📚 Acknowledgments & Credits
 
-**SteelSeries OLED & RGB Hub (`v1.44`)** stands on the shoulders of great open-source projects and **includes all features of the original application** alongside major new expansions (built & expanded **100% via vibe coding**):
+**SteelSeries OLED & RGB Hub (`v1.45`)** stands on the shoulders of great open-source projects and **includes all features of the original application** alongside major new expansions (built & expanded **100% via vibe coding**):
 
-- **Author & Maintainer (`v1.44`)**: **[gizmous](https://github.com/Gizmous100)** — author of the `v1.10`–`v1.44` expansions (Wireless Headset Battery HID, Live Weather & Multi-Region Global AQI, 9-Language OLED Localization, Smart AFK + In-Game Suppression, Auto-Game Hardware Monitor, 10-Zone Mouse RGB & GG Config Sync, SMTC/Prime Video Hysteresis, and Adaptive Anti-Jitter Clock Layouts), **vibe-coded in its entirety**.
+- **Author & Maintainer (`v1.45`)**: **[gizmous](https://github.com/Gizmous100)** — author of the `v1.10`–`v1.45` expansions (Wireless Headset Battery HID, Live Weather & Multi-Region Global AQI, 9-Language OLED Localization, Smart AFK + In-Game Suppression, Auto-Game Hardware Monitor, 10-Zone Mouse RGB & GG Config Sync, SMTC/Prime Video Hysteresis, and Adaptive Anti-Jitter Clock Layouts), **vibe-coded in its entirety**.
 - **Original Application & Inspiration**: **[0z-zy](https://github.com/0z-zy)** — creator of the original [OLED Customizer](https://github.com/0z-zy/OLED_Customizer), which served as the direct inspiration and base for this project. All original features created by **0z-zy** are fully preserved in this edition.
 - **Foundational Inspiration**: **[Firewee](https://github.com/Firewee)** — creator of [SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker), whose core OLED & Spotify integration inspired the original project.
 
 ---
 
-**Developed and Expanded by [gizmous](https://github.com/Gizmous100) (`v1.44`) • 100% Vibe-Coded • Includes all original features & heavily inspired by [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) by [0z-zy](https://github.com/0z-zy) & [Firewee](https://github.com/Firewee).**
+**Developed and Expanded by [gizmous](https://github.com/Gizmous100) (`v1.45`) • 100% Vibe-Coded • Includes all original features & heavily inspired by [OLED Customizer](https://github.com/0z-zy/OLED_Customizer) by [0z-zy](https://github.com/0z-zy) & [Firewee](https://github.com/Firewee).**

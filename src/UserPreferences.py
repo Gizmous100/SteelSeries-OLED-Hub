@@ -65,7 +65,10 @@ class UserPreferences:
         "weather_display_time": 5,
         "hotkey_weather": "Key.f8",
         "show_profile_switch_overlay": True,
-        "profile_switch_display_time": 3.5
+        "profile_switch_display_time": 3.5,
+        "show_lock_keys_overlay": True,
+        "lock_keys_overlay_duration": 1.8,
+        "show_lock_keys_clock": True
     }
 
     def __init__(self):

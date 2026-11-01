@@ -424,6 +424,9 @@ class SettingsGUI:
         self.vars["afk_timeout_minutes"] = tk.StringVar(value=str(self.prefs.get_preference("afk_timeout_minutes") or "5"))
         self.vars["show_profile_switch_overlay"] = tk.BooleanVar(value=bool(self.prefs.get_preference("show_profile_switch_overlay")))
         self.vars["profile_switch_display_time"] = tk.StringVar(value=str(self.prefs.get_preference("profile_switch_display_time") or "3.5"))
+        self.vars["show_lock_keys_overlay"] = tk.BooleanVar(value=bool(self.prefs.get_preference("show_lock_keys_overlay")))
+        self.vars["lock_keys_overlay_duration"] = tk.StringVar(value=str(self.prefs.get_preference("lock_keys_overlay_duration") or "1.8"))
+        self.vars["show_lock_keys_clock"] = tk.BooleanVar(value=bool(self.prefs.get_preference("show_lock_keys_clock")))
 
     def _create_pages(self):
         # General
@@ -514,6 +517,26 @@ class SettingsGUI:
             padx=12,
             pady=4,
             command=self._test_profile_overlay,
+        ).pack(side="left", padx=(5, 0))
+
+        tk.Frame(p_disp, bg=Colors.CONTENT, height=10).pack()
+        self._header(p_disp, "⌨️ Keyboard Lock Keys Indicators")
+        self._toggle_row(p_disp, "Show Caps / Num / Scroll Lock Overlay", self.vars["show_lock_keys_overlay"])
+        self._entry_row(p_disp, "Lock Overlay Duration (s)", self.vars["lock_keys_overlay_duration"], width=10)
+        self._toggle_row(p_disp, "Show Lock Badges on Clock ([C] [N] [S])", self.vars["show_lock_keys_clock"])
+        lock_btn_row = tk.Frame(p_disp, bg=Colors.CONTENT)
+        lock_btn_row.pack(fill="x", pady=(8, 0))
+        tk.Button(
+            lock_btn_row,
+            text="⌨️ Test Lock Keys Overlay Now",
+            bg=Colors.CARD_BG,
+            fg=Colors.TEXT_MAIN,
+            font=FONT_BODY,
+            relief="flat",
+            cursor="hand2",
+            padx=12,
+            pady=4,
+            command=self._test_lock_keys_overlay,
         ).pack(side="left", padx=(5, 0))
         self.pages["Display"] = p_disp
 
@@ -755,6 +778,15 @@ class SettingsGUI:
                     self.manager.trigger_afk_test()
                 except Exception as e:
                     logger.error(f"AFK test failed: {e}")
+            threading.Thread(target=_worker, daemon=True).start()
+
+    def _test_lock_keys_overlay(self):
+        if self.manager and hasattr(self.manager, "trigger_lock_keys_overlay_test"):
+            def _worker():
+                try:
+                    self.manager.trigger_lock_keys_overlay_test()
+                except Exception as e:
+                    logger.error(f"Lock keys overlay test failed: {e}")
             threading.Thread(target=_worker, daemon=True).start()
 
     def _test_profile_overlay(self):
@@ -1030,6 +1062,12 @@ class SettingsGUI:
                         val = int(fval) if fval.is_integer() else round(fval, 2)
                     except Exception:
                         val = UserPreferences.DEFAULT.get(k, 5)
+
+                if k in ["profile_switch_display_time", "lock_keys_overlay_duration"]:
+                    try:
+                        val = float(str(val).replace(",", "."))
+                    except Exception:
+                        val = UserPreferences.DEFAULT.get(k, 1.8)
                 
                 # Special mapping for date format checkbox
                 if k == "date_format":

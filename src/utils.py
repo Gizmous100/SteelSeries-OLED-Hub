@@ -303,4 +303,17 @@ def get_cursor_pos() -> tuple[int, int]:
         return (int(pt.x), int(pt.y))
     return (0, 0)
 
+def get_keyboard_lock_states() -> tuple[bool, bool, bool]:
+    """
+    Return (caps_lock, num_lock, scroll_lock) states as booleans using Win32 GetKeyState.
+    Bit 0 (least significant bit) indicates toggled state (1 = ON, 0 = OFF).
+    """
+    try:
+        user32 = ctypes.windll.user32
+        caps = bool(user32.GetKeyState(0x14) & 1)
+        num = bool(user32.GetKeyState(0x90) & 1)
+        scroll = bool(user32.GetKeyState(0x91) & 1)
+        return (caps, num, scroll)
+    except Exception:
+        return (False, False, False)
 

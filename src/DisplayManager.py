@@ -11,6 +11,7 @@ from src.Calculator import Calculator
 from src.Weather import WeatherModule
 from src.volume import VolumeOverlay
 from src.ProfileOverlay import ProfileOverlay
+from src.LockKeysOverlay import LockKeysOverlay
 from src.image_utils import convert_to_bitmap
 from src.UserPreferences import UserPreferences
 from src.Systray import run_systray_async
@@ -19,7 +20,7 @@ from src.HardwareMonitor import HardwareMonitor
 from src.ExtensionReceiver import ExtensionReceiver
 from src.DiscordRPC import DiscordIPC
 from src.HIDListener import HIDListener
-from src.utils import is_process_running, find_steelseries_gg_path, launch_process, get_idle_time_ms, get_last_input_info, get_cursor_pos
+from src.utils import is_process_running, find_steelseries_gg_path, launch_process, get_idle_time_ms, get_last_input_info, get_cursor_pos, get_keyboard_lock_states
 import asyncio
 
 import ctypes
@@ -93,6 +94,9 @@ class DisplayManager:
         self.volume_overlay = VolumeOverlay(config)
         profile_timeout = float(self.user_preferences.get_preference("profile_switch_display_time") or 3.5)
         self.profile_overlay = ProfileOverlay(config, timeout=profile_timeout)
+        lock_timeout = float(self.user_preferences.get_preference("lock_keys_overlay_duration") or 1.8)
+        self.lock_keys_overlay = LockKeysOverlay(config, timeout=lock_timeout)
+        self._last_lock_states = get_keyboard_lock_states()
         self._last_active_loadout_name = ""
         self._test_profile_idx = 0
         self.hardware_monitor = HardwareMonitor(config, self.user_preferences)
@@ -165,6 +169,10 @@ class DisplayManager:
         self.timer.mute_status_getter = self._get_clock_mute_status
         self.timer.show_clock_mute_icons = bool(
             self.user_preferences.get_preference("show_clock_mute_icons")
+        )
+        self.timer.lock_keys_getter = get_keyboard_lock_states
+        self.timer.show_lock_keys_clock = bool(
+            self.user_preferences.get_preference("show_lock_keys_clock")
         )
         Thread(target=self._discord_rpc_loop, daemon=True, name="Discord-RPC").start()
 
@@ -349,6 +357,8 @@ class DisplayManager:
                 elif action == "toggle_mute":
                     logger.info("Mute key pressed - Toggling Mute")
                     self.volume_overlay.toggle_mic_mute()
+                elif action == "check_lock_keys":
+                    self._check_keyboard_lock_keys()
                 elif action == "calc_on":
                     self.calculator.clear()
                     logger.info("Calculator activated")
@@ -562,6 +572,10 @@ class DisplayManager:
                                 self._shift_held = False
                             # Don't suppress Shift itself
                             return user32.CallNextHookEx(None, nCode, wParam, lParam)
+
+                        # Track lock key changes (Caps Lock: 0x14, Num Lock: 0x90, Scroll Lock: 0x91)
+                        if is_up and vk in (0x14, 0x90, 0x91):
+                            _enqueue("check_lock_keys")
 
                         # Only process key-DOWN events for actions below
                         if is_down:
@@ -830,6 +844,13 @@ class DisplayManager:
             self.profile_overlay.set_timeout(
                 float(self.user_preferences.get_preference("profile_switch_display_time") or 3.5)
             )
+        if hasattr(self, "lock_keys_overlay"):
+            self.lock_keys_overlay.set_timeout(
+                float(self.user_preferences.get_preference("lock_keys_overlay_duration") or 1.8)
+            )
+        self.timer.show_lock_keys_clock = bool(
+            self.user_preferences.get_preference("show_lock_keys_clock")
+        )
         self.timer.show_battery = bool(
             self.user_preferences.get_preference("show_headset_battery"))
         self.timer.show_battery_percent = bool(
@@ -913,15 +934,17 @@ class DisplayManager:
         now = time()
         target_lighting = 0 if self._is_afk else 1
         if self._last_lighting_state != target_lighting:
-            if now - getattr(self, "_last_lighting_attempt_ts", 0.0) < 3.0:
+            if now - getattr(self, "_last_lighting_failed_ts", 0.0) < 3.0:
                 return
-            self._last_lighting_attempt_ts = now
             try:
                 if self.steelseries_api.set_lighting(not self._is_afk):
                     self._last_lighting_state = target_lighting
+                    self._last_lighting_failed_ts = 0.0
                 else:
+                    self._last_lighting_failed_ts = now
                     logger.debug("set_lighting returned False, will retry in 3s")
             except Exception as e:
+                self._last_lighting_failed_ts = now
                 logger.debug(f"Failed to set lighting state: {e}")
 
     # _parse_key removed — replaced by _key_str_to_vk and _reload_hotkey_vks above
@@ -1241,6 +1264,8 @@ class DisplayManager:
             frame_data = None
             is_profile_active = False
 
+            self._check_keyboard_lock_keys()
+
             if self._is_afk:
                 # AFK: Blank screen (all 640 bytes = 0x00)
                 frame_data = [0] * 640
@@ -1261,6 +1286,14 @@ class DisplayManager:
                 img = self.profile_overlay.get_image()
                 frame_data = convert_to_bitmap(img)
                 is_profile_active = True
+            # Lock Keys Overlay (Caps / Num / Scroll Lock)
+            elif (
+                hasattr(self, "lock_keys_overlay")
+                and self.lock_keys_overlay.should_display()
+                and self.user_preferences.get_preference("show_lock_keys_overlay")
+            ):
+                img = self.lock_keys_overlay.get_image()
+                frame_data = convert_to_bitmap(img)
             # Hardware monitor overlay
             elif self.display_hw_monitor or self.hardware_monitor.should_display() or self.hardware_monitor.is_game_running():
                 img = self.hardware_monitor.get_image()
@@ -1994,6 +2027,70 @@ class DisplayManager:
                 self.volume_overlay.set_discord_mute(None, None, False)
                 self._discord_ipc.close()
                 sleep(10)  # Wait before retry on error
+    def _check_keyboard_lock_keys(self):
+        """Check if Caps/Num/Scroll lock states changed and trigger HUD overlay if enabled."""
+        if not hasattr(self, "lock_keys_overlay"):
+            return
+        current_locks = get_keyboard_lock_states()
+        if not hasattr(self, "_last_lock_states"):
+            self._last_lock_states = current_locks
+            return
+
+        if current_locks != self._last_lock_states:
+            caps_old, num_old, scroll_old = self._last_lock_states
+            caps_new, num_new, scroll_new = current_locks
+
+            toggled_key = None
+            is_active = False
+
+            if caps_new != caps_old:
+                toggled_key = "CAPS LOCK"
+                is_active = caps_new
+            elif num_new != num_old:
+                toggled_key = "NUM LOCK"
+                is_active = num_new
+            elif scroll_new != scroll_old:
+                toggled_key = "SCROLL LOCK"
+                is_active = scroll_new
+
+            self._last_lock_states = current_locks
+
+            if toggled_key and self.user_preferences.get_preference("show_lock_keys_overlay"):
+                self.lock_keys_overlay.trigger(
+                    toggled_key=toggled_key,
+                    is_active=is_active,
+                    caps=caps_new,
+                    num=num_new,
+                    scroll=scroll_new,
+                )
+                try:
+                    oled_img = self.lock_keys_overlay.get_image()
+                    oled_frame = convert_to_bitmap(oled_img)
+                    if self.steelseries_api.send_frame(oled_frame):
+                        self._last_sent_frame = oled_frame
+                except Exception:
+                    pass
+
+    def trigger_lock_keys_overlay_test(self):
+        """Test triggering the lock keys overlay for UI preview."""
+        if not hasattr(self, "lock_keys_overlay"):
+            return
+        caps, num, scroll = get_keyboard_lock_states()
+        self.lock_keys_overlay.trigger(
+            toggled_key="CAPS LOCK",
+            is_active=not caps,
+            caps=not caps,
+            num=num,
+            scroll=scroll,
+        )
+        try:
+            oled_img = self.lock_keys_overlay.get_image()
+            oled_frame = convert_to_bitmap(oled_img)
+            if self.steelseries_api.send_frame(oled_frame):
+                self._last_sent_frame = oled_frame
+        except Exception:
+            pass
+
     def trigger_profile_overlay_test(self):
         """Test triggering the profile overlay, cycling through sample devices/profiles."""
         if not hasattr(self, "profile_overlay"):

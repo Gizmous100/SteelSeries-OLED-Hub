@@ -60,19 +60,22 @@ class Timer:
         # exactly the battery icon's width, so it centres cleanly underneath.
         self.FONT_BATT = safe_load_font(fetch_content_path('fonts/VerdanaBold.ttf'), 9)
         self.FONT_NARROW = safe_load_font(fetch_content_path('fonts/MunroSmall.ttf'), 10)
+        self.FONT_LOCK_BADGE = safe_load_font(fetch_content_path('fonts/MunroSmall.ttf'), 8)
 
         # The clock changes at most once per second but get_image is called at
         # display FPS (10x/sec) — cache the rendered frame per displayed state.
         self._cache_key = None
         self._cached_image = None
 
-        # Headset battery, weather, and mute/deafen widgets injected by DisplayManager
+        # Headset battery, weather, mute/deafen, and lock keys widgets injected by DisplayManager
         self.show_battery = False
         self.show_battery_percent = False   # icon only unless enabled
         self.show_clock_mute_icons = False
+        self.show_lock_keys_clock = False
         self.battery_getter = None
         self.weather_getter = None
         self.mute_status_getter = None
+        self.lock_keys_getter = None
 
         self.icon_mic_on = self._load_icon("assets/icons/mic_on.png")
         self.icon_mic_off = self._load_icon("assets/icons/mic_off.png")
@@ -153,6 +156,55 @@ class Timer:
         except Exception:
             pass
         return None
+
+    def _lock_keys(self):
+        if not self.show_lock_keys_clock or not callable(self.lock_keys_getter):
+            return None
+        try:
+            res = self.lock_keys_getter()
+            if res and any(res):
+                return (bool(res[0]), bool(res[1]), bool(res[2]))
+        except Exception:
+            pass
+        return None
+
+    def _draw_lock_badges(self, draw, lock_tuple, style, cx, cy, avail_w, x_left, x_right, day_cx=None):
+        """
+        Draw compact inverted badges ([C], [N], [S]) for active lock keys
+        positioned cleanly with 0 pixel collision across all clock styles.
+        """
+        if not lock_tuple or not any(lock_tuple):
+            return
+
+        badges = [("C", lock_tuple[0]), ("N", lock_tuple[1]), ("S", lock_tuple[2])]
+        active = [char for char, is_active in badges if is_active]
+        if not active:
+            return
+
+        box_w, box_h, gap = 9, 6, 2
+        k = len(active)
+        total_w = k * box_w + (k - 1) * gap
+
+        if style == self.Style.ANALOG:
+            badge_cx = day_cx if day_cx is not None else cx
+            by0 = 29
+        elif style == self.Style.DATE_FOCUSED:
+            badge_cx = cx
+            by0 = 1
+        else:
+            # STANDARD and BIG
+            badge_cx = cx
+            by0 = 34
+
+        by1 = by0 + box_h - 1
+        on, off = self.config.primary, self.config.secondary
+        start_x = int(round(badge_cx - total_w / 2.0))
+
+        for i, char in enumerate(active):
+            bx0 = start_x + i * (box_w + gap)
+            bx1 = bx0 + box_w - 1
+            draw.rectangle((bx0, by0, bx1, by1), fill=on)
+            draw.text((bx0 + box_w // 2, by0 + 2), char, font=self.FONT_LOCK_BADGE, fill=off, anchor="mm")
 
     def _draw_mute_icons_top(self, image, mute_tuple):
         """Draw only mic_off / speaker_mute icons (without text) in the top weather-icon slot (y = 2..13)."""
@@ -260,15 +312,16 @@ class Timer:
         battery = self._battery()
         mute_tuple = self._mute_status()
         weather_tuple = self._weather()
+        lock_tuple = self._lock_keys()
         now = localtime()
         t_text, d_text = self.get_current_time()
 
         if self.style == self.Style.ANALOG:
             key = (self.style, now.tm_hour, now.tm_min,
                    now.tm_sec if self.display_seconds else -1,
-                   self.language, battery, self.show_battery_percent, weather_tuple, mute_tuple)
+                   self.language, battery, self.show_battery_percent, weather_tuple, mute_tuple, lock_tuple)
         else:
-            key = (self.style, t_text, d_text, battery, self.show_battery_percent, weather_tuple, mute_tuple)
+            key = (self.style, t_text, d_text, battery, self.show_battery_percent, weather_tuple, mute_tuple, lock_tuple)
 
         if key == self._cache_key and self._cached_image is not None:
             return self._cached_image
@@ -331,6 +384,8 @@ class Timer:
 
             # Day Name to the right of the analog dial
             draw.text((day_cx, cy), day_label, font=self.FONT_DIGI_SMALL, fill=self.config.primary, anchor="mm")
+            if lock_tuple:
+                self._draw_lock_badges(draw, lock_tuple, self.Style.ANALOG, cx, cy, avail_w, x_left, x_right, day_cx=day_cx)
 
         elif self.style == self.Style.BIG:
             # === BIG STYLE: HUGE TIME, NO DATE (auto-fitted to available width) ===
@@ -342,6 +397,8 @@ class Timer:
                 fill=self.config.primary,
                 anchor="mm"
             )
+            if lock_tuple:
+                self._draw_lock_badges(draw, lock_tuple, self.Style.BIG, cx, cy, avail_w, x_left, x_right)
 
         elif self.style == self.Style.DATE_FOCUSED:
             # === DATE FOCUSED: BIG DATE, SMALL TIME (auto-fitted to available width) ===
@@ -361,6 +418,8 @@ class Timer:
                 fill=self.config.primary,
                 anchor="mm"
             )
+            if lock_tuple:
+                self._draw_lock_badges(draw, lock_tuple, self.Style.DATE_FOCUSED, cx, cy, avail_w, x_left, x_right)
 
         else:
             # === STANDARD STYLE (Default, auto-fitted to available width) ===
@@ -374,12 +433,14 @@ class Timer:
                 anchor="mm"
             )
             draw.text(
-                (cx, cy + 10),
+                (cx, cy + 9),
                 d_text,
                 font=date_font,
                 fill=self.config.primary,
                 anchor="mm"
             )
+            if lock_tuple:
+                self._draw_lock_badges(draw, lock_tuple, self.Style.STANDARD, cx, cy, avail_w, x_left, x_right)
 
         if weather_tuple is not None:
             self._draw_weather(image, draw, weather_tuple, mute_tuple)

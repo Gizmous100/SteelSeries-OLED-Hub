@@ -137,12 +137,9 @@ class SteelSeriesAPI:
 
     def _redeploy_engine_active_configs(self):
         """
-        Redeploy the active SteelSeries GG Engine configuration on connected RGB
+        Force-redeploy currently active configurations on all connected SteelSeries
         devices via encryptedAddress (/configuration/<id>/forceDeploy).
-        Also disables any conflicting onboard hardware idle_timeout (e.g. Apex 7's
-        default 300000ms keyboard-only firmware timer that dims the keyboard even
-        while the user is actively moving the mouse) so AFK blackout is managed
-        uniformly across keyboard, mouse, and OLED by SteelSeries OLED & RGB Hub.
+        Non-destructive: does not modify or overwrite device settings in the database.
         """
         if not self.encrypted_address:
             return
@@ -157,41 +154,6 @@ class SteelSeriesAPI:
                 if not dev.get("supports_prism_sync") and dev.get("type") not in (0, 1):
                     continue
                 cfgs = dev.get("configuration_metadata") or []
-                for cfg_meta in cfgs:
-                    cid = cfg_meta.get("id")
-                    if not cid:
-                        continue
-                    try:
-                        get_req = urllib.request.Request(f"{self.encrypted_address}/configuration/{cid}")
-                        with urllib.request.urlopen(get_req, context=ctx, timeout=1.5) as c_resp:
-                            cfg_wrapper = loads(c_resp.read().decode("utf-8"))
-                        cfg_obj = cfg_wrapper.get("configuration") or {}
-                        raw_settings = cfg_obj.get("settings")
-                        if isinstance(raw_settings, str) and "idle_timeout" in raw_settings:
-                            settings_dict = loads(raw_settings)
-                            idle_to = settings_dict.get("idle_timeout")
-                            if isinstance(idle_to, dict) and int(idle_to.get("timeout") or 0) > 0:
-                                prev_to = idle_to.get("timeout")
-                                settings_dict["idle_timeout"] = {"timeout": 0}
-                                cfg_obj["settings"] = dumps(settings_dict)
-                                cfg_obj.pop("undeployedsettings", None)
-                                put_req = urllib.request.Request(
-                                    f"{self.encrypted_address}/configuration/{cid}",
-                                    data=dumps(cfg_obj).encode("utf-8"),
-                                    headers={"Content-Type": "application/json"},
-                                    method="PUT",
-                                )
-                                with urllib.request.urlopen(put_req, context=ctx, timeout=2.0) as _:
-                                    pass
-                                logger.info(
-                                    "Disabled onboard hardware idle_timeout (was %sms) in Engine config '%s' on %s",
-                                    prev_to,
-                                    cfg_meta.get("name"),
-                                    dev.get("name"),
-                                )
-                    except Exception as ie:
-                        logger.debug("Onboard idle_timeout check skipped for %s: %s", cid, ie)
-
                 active_cfg = (
                     next((c for c in cfgs if c.get("active") == 1 and c.get("last_deployed") == 1), None)
                     or next((c for c in cfgs if c.get("active") == 1), None)
@@ -217,12 +179,14 @@ class SteelSeriesAPI:
 
     def _bind_lighting_event(self) -> bool:
         """
-        Register the dedicated AFK_GAME and bind its LIGHTING event for Keyboard
-        RGB zones during AFK blackout:
+        Register the dedicated AFK_GAME and bind its LIGHTING event for Keyboard,
+        Mouse, and RGB zones during AFK blackout using official GameSense API:
         - For per-key RGB keyboards (Apex 7, Apex Pro, etc.), GameSense requires
           mode: "bitmap" when targeting zone: "all".
-        - Generic keyboard catch-all uses mode: "color".
-        Mice and keyboards are also natively blacked out via _blackout_device_configs().
+        - For mice (Rival 5, etc.) and RGB zones, targets exact hardware zones
+          with static color [0, 0, 0] to avoid default orange fallbacks.
+        - Bound once at startup; toggled strictly via /game_event and /stop_game
+          without repetitive register/remove churn (prevents HTTP 429).
         """
         self.send_data("/game_metadata", {
             "game": AFK_GAME,
@@ -232,229 +196,88 @@ class SteelSeriesAPI:
             "options": {"enabled": True}
         }, ignore_errors=True)
 
-        color_ranges = [
-            {"low": 0, "high": 1, "color": {"red": 0, "green": 0, "blue": 0}}
-        ]
+        black = {"red": 0, "green": 0, "blue": 0}
 
         lighting_handlers = [
-            # For per-key RGB keyboards (Apex 7, Apex Pro, etc.), GameSense requires
-            # mode: "bitmap" when targeting zone: "all".
+            # For per-key RGB keyboards (Apex 7, Apex Pro, etc.)
             {
                 "device-type": "rgb-per-key-zones",
                 "zone": "all",
                 "mode": "bitmap"
             },
-            # Generic keyboard catch-all
+            # Mouse standard zones (wheel, logo)
             {
-                "device-type": "keyboard",
-                "zone": "all",
+                "device-type": "mouse",
+                "zone": "wheel",
                 "mode": "color",
-                "color": color_ranges
-            }
+                "color": black
+            },
+            {
+                "device-type": "mouse",
+                "zone": "logo",
+                "mode": "color",
+                "color": black
+            },
         ]
+
+        # Multi-zone mouse specific zones (Rival 5 10 zones, Rival 600 8 zones, etc.)
+        for z in ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"):
+            lighting_handlers.append({
+                "device-type": "rgb-10-zone",
+                "zone": z,
+                "mode": "color",
+                "color": black
+            })
+            lighting_handlers.append({
+                "device-type": "rgb-zoned-device",
+                "zone": z,
+                "mode": "color",
+                "color": black
+            })
+
+        # Other zoned hardware (headsets, single/dual zone mice, mousepads)
+        for general_type in ("rgb-1-zone", "rgb-2-zone", "rgb-3-zone", "rgb-5-zone", "rgb-8-zone", "rgb-12-zone"):
+            lighting_handlers.append({
+                "device-type": general_type,
+                "zone": "one",
+                "mode": "color",
+                "color": black
+            })
 
         ok = self.send_data("/bind_game_event", {
             "game": AFK_GAME,
             "event": "LIGHTING",
-            "min_value": 0,
-            "max_value": 1,
             "value_optional": True,
             "handlers": lighting_handlers
         })
         self._lighting_bound = bool(ok)
         if ok:
-            logger.info("Bound LIGHTING event on %s for Keyboard AFK blackout [0, 0, 0]", AFK_GAME)
+            # Stop session immediately so normal desktop profile is active until AFK
+            self.send_data("/stop_game", {"game": AFK_GAME}, ignore_errors=True)
+            logger.info("Bound LIGHTING event on %s for dual-device AFK blackout [0, 0, 0]", AFK_GAME)
         return bool(ok)
 
     def _blackout_device_configs(self) -> bool:
-        """
-        Natively black out all connected SteelSeries keyboards and mice during AFK mode.
-        Because SteelSeries GG Engine has no GameSense dispatcher support for
-        multi-zone composite mice (e.g. Rival 5 with 10 zones), and GameSense event
-        routing for per-key keyboards can be overridden by active GG profiles,
-        applying native Engine config updates via /configuration/<cid>/forceDeploy ensures
-        100% true blackout [0, 0, 0] across all keyboard and mouse keys/zones.
-        """
-        if not self.encrypted_address:
-            return False
-
-        try:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-
-            req = urllib.request.Request(f"{self.encrypted_address}/devices")
-            with urllib.request.urlopen(req, context=ctx, timeout=2.0) as resp:
-                devices = loads(resp.read().decode("utf-8")).get("devices", [])
-
-            for dev in devices:
-                if dev.get("connected") != 1:
-                    continue
-
-                dev_id = dev.get("id")
-                dev_type = dev.get("type")
-                dev_name = str(dev.get("name", "")).lower()
-                pid = dev.get("product_id")
-
-                is_mouse = (
-                    dev_type == 1
-                    or pid == 272111676
-                    or any(k in dev_name for k in ("mouse", "rival", "aerox", "sensei", "prime"))
-                )
-                is_keyboard = (
-                    dev_type == 0
-                    or any(k in dev_name for k in ("keyboard", "apex"))
-                )
-
-                if not (is_mouse or is_keyboard) or not dev_id:
-                    continue
-
-                req_cfgs = urllib.request.Request(f"{self.encrypted_address}/device/{dev_id}/configurations")
-                with urllib.request.urlopen(req_cfgs, context=ctx, timeout=2.0) as resp_cfgs:
-                    cfgs = loads(resp_cfgs.read().decode("utf-8")).get("configurations", [])
-
-                active_cfg = (
-                    next((c for c in cfgs if c.get("active") == 1 and c.get("last_deployed") == 1), None)
-                    or next((c for c in cfgs if c.get("active") == 1), None)
-                    or next((c for c in cfgs if c.get("last_deployed") == 1), None)
-                    or (cfgs[0] if cfgs else None)
-                )
-                if not active_cfg or not active_cfg.get("id"):
-                    continue
-
-                cid = active_cfg["id"]
-                raw_settings = active_cfg.get("settings", "{}")
-
-                # Save original settings if not already preserved
-                if cid not in self._afk_saved_device_configs:
-                    self._afk_saved_device_configs[cid] = (active_cfg, raw_settings, dev.get("name", "device"))
-
-                # Modify to black settings
-                settings_dict = loads(raw_settings)
-                settings_dict["global_brightness"] = {"value": 0}
-                settings_dict["default_lighting_enabled"] = {"default_lighting_enabled": 0}
-
-                # Clear all color sequences and RGB elements
-                for k in list(settings_dict.keys()):
-                    if "color_sequence" in k and isinstance(settings_dict[k], dict) and "data" in settings_dict[k]:
-                        old_data = settings_dict[k]["data"]
-                        n_len = len(old_data[0]) if old_data and isinstance(old_data[0], list) else 30
-                        settings_dict[k]["data"] = [[0] * n_len]
-                    elif "lighting" in k and isinstance(settings_dict[k], dict) and k != "lighting_config":
-                        sub = settings_dict[k]
-                        if "initial_color" in sub:
-                            sub["initial_color"] = {"r": 0, "g": 0, "b": 0}
-                        if "react_color" in sub:
-                            sub["react_color"] = {"r": 0, "g": 0, "b": 0, "time": 0}
-
-                # Keyboard-specific illumination elements (e.g. Apex 7, Apex Pro)
-                if "idle_mode_dimmer" in settings_dict and isinstance(settings_dict["idle_mode_dimmer"], dict):
-                    settings_dict["idle_mode_dimmer"]["value"] = 0
-
-                if "lock_key_color" in settings_dict and isinstance(settings_dict["lock_key_color"], dict):
-                    settings_dict["lock_key_color"] = {"r": 0, "g": 0, "b": 0}
-
-                if "lighting_config" in settings_dict and isinstance(settings_dict["lighting_config"], dict):
-                    lc = settings_dict["lighting_config"]
-                    for g_key in ("foundation_graphics", "idle_graphics", "reactive_graphics"):
-                        if g_key in lc and isinstance(lc[g_key], dict):
-                            lc[g_key]["graphics"] = []
-                            lc[g_key]["num_graphics"] = 0
-                    if "zones" in lc and isinstance(lc["zones"], dict) and "zones" in lc["zones"]:
-                        for z in lc["zones"]["zones"]:
-                            if isinstance(z, dict):
-                                if "foundation_default_color" in z:
-                                    z["foundation_default_color"] = {"r": 0, "g": 0, "b": 0}
-                                if "idle_default_color" in z:
-                                    z["idle_default_color"] = {"r": 0, "g": 0, "b": 0}
-
-                active_cfg["settings"] = dumps(settings_dict)
-                active_cfg.pop("undeployedSettings", None)
-                active_cfg.pop("undeployedsettings", None)
-
-                put_req = urllib.request.Request(
-                    f"{self.encrypted_address}/configuration/{cid}",
-                    data=dumps(active_cfg).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="PUT",
-                )
-                with urllib.request.urlopen(put_req, context=ctx, timeout=2.0) as _:
-                    pass
-
-                deploy_req = urllib.request.Request(
-                    f"{self.encrypted_address}/configuration/{cid}/forceDeploy",
-                    data=b"",
-                    method="POST",
-                )
-                with urllib.request.urlopen(deploy_req, context=ctx, timeout=2.0) as _:
-                    pass
-
-                logger.info(
-                    "Applied native AFK blackout [0, 0, 0] to %s '%s' (%s)",
-                    "keyboard" if is_keyboard else "mouse",
-                    dev.get("name"),
-                    cid,
-                )
-            return True
-        except Exception as e:
-            logger.debug("Device AFK blackout skipped/failed: %s", e)
-            return False
+        """Deprecated: in-database configuration mutation removed in favor of GameSense API."""
+        return True
 
     def _blackout_mouse_configs(self) -> bool:
-        """Backward-compatible alias for _blackout_device_configs."""
-        return self._blackout_device_configs()
+        """Deprecated backward-compatible alias."""
+        return True
 
     def _restore_device_configs(self) -> bool:
-        """
-        Restore original SteelSeries GG Engine configurations and colors on keyboards
-        and mice when exiting AFK mode.
-        """
-        if not self.encrypted_address or not self._afk_saved_device_configs:
-            return True
-
-        try:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-
-            for cid, (cfg, orig_settings, dev_name) in list(self._afk_saved_device_configs.items()):
-                cfg["settings"] = orig_settings
-                cfg.pop("undeployedSettings", None)
-                cfg.pop("undeployedsettings", None)
-
-                put_req = urllib.request.Request(
-                    f"{self.encrypted_address}/configuration/{cid}",
-                    data=dumps(cfg).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="PUT",
-                )
-                with urllib.request.urlopen(put_req, context=ctx, timeout=2.0) as _:
-                    pass
-
-                deploy_req = urllib.request.Request(
-                    f"{self.encrypted_address}/configuration/{cid}/forceDeploy",
-                    data=b"",
-                    method="POST",
-                )
-                with urllib.request.urlopen(deploy_req, context=ctx, timeout=2.0) as _:
-                    pass
-
-                logger.info("Restored native Engine lighting for '%s' (%s)", dev_name, cid)
-
-            self._afk_saved_device_configs.clear()
-            return True
-        except Exception as e:
-            logger.debug("Device lighting restore skipped/failed: %s", e)
-            return False
+        """Deprecated: in-database configuration mutation removed in favor of GameSense API."""
+        return True
 
     def _restore_mouse_configs(self) -> bool:
-        """Backward-compatible alias for _restore_device_configs."""
-        return self._restore_device_configs()
+        """Deprecated backward-compatible alias."""
+        return True
 
     def release_lighting_to_gg(self, force: bool = False) -> bool:
         """
         Cleanly release any AFK GameSense bindings and restore native SteelSeries
         GG Engine configurations.
+        Uses /stop_game (not /remove_game) to preserve registration and avoid 429 errors.
         """
         if not self.address:
             return False
@@ -463,27 +286,13 @@ class SteelSeriesAPI:
             if not force or (now - getattr(self, "_last_lighting_release_ts", 0.0) < 2.0):
                 return True
 
-        # Clean up temporary GameSense session FIRST if bound,
-        # so any GoLisp `device reset:` signal executes before restoring profiles.
         if getattr(self, "_lighting_bound", False):
-            self.send_data("/remove_game_event", {
-                "game": AFK_GAME,
-                "event": "LIGHTING"
-            }, ignore_errors=True)
             self.send_data("/stop_game", {
                 "game": AFK_GAME
             }, ignore_errors=True)
-            self.send_data("/remove_game", {
-                "game": AFK_GAME
-            }, ignore_errors=True)
-            self._lighting_bound = False
             self._last_lighting_release_ts = time()
-            sleep(0.05)
 
-        if getattr(self, "_afk_saved_device_configs", None):
-            self._restore_device_configs()
-        else:
-            self._redeploy_engine_active_configs()
+        self._redeploy_engine_active_configs()
         logger.info("Released AFK lighting (%s) and restored SteelSeries GG Engine native configs", AFK_GAME)
         return True
 
@@ -520,13 +329,12 @@ class SteelSeriesAPI:
             }
         }, ignore_errors=True)
 
-        # 2. Only bind LIGHTING on AFK_GAME when in AFK blackout; otherwise ensure
-        # AFK_GAME is removed and native GG Engine configs are deployed.
+        # 2. Bind LIGHTING on AFK_GAME once at startup
+        self._bind_lighting_event()
         if not getattr(self, "_lighting_active", True):
-            self._bind_lighting_event()
             self.set_lighting(False)
         else:
-            sleep(0.1)
+            sleep(0.05)
             self._redeploy_engine_active_configs()
 
         logger.info("Bound game event: UPDATE (OLED 128x40)")
@@ -550,56 +358,32 @@ class SteelSeriesAPI:
 
     def set_lighting(self, active: bool):
         """
-        Apply AFK lighting transition:
-        - active=False (AFK mode): natively black out connected keyboards and mice
-          via encrypted Engine REST API forceDeploy (with GameSense fallback).
-        - active=True (Wake / Normal): cleanly release any GameSense session, then perform
-          a single-pass atomic restore of native device configurations without flickering.
+        Apply AFK lighting transition using official GameSense API:
+        - active=False (AFK mode): bind AFK_GAME and send black LIGHTING event
+          ([0, 0, 0] across keyboard, mouse, and RGB zones) without touching the database.
+        - active=True (Wake / Normal): cleanly release GameSense AFK session and
+          redeploy native SteelSeries GG Engine active configurations.
         """
         self._lighting_active = bool(active)
 
         if not active:
-            # 1. Primary & reliable method: Native hardware configuration blackout via REST API
-            dev_ok = self._blackout_device_configs()
-
-            # 2. Fallback to GameSense only if native blackout failed or encrypted address unavailable
-            kb_ok = True
-            if not dev_ok:
-                if not getattr(self, "_lighting_bound", False):
-                    kb_ok = self._bind_lighting_event()
-                if kb_ok:
-                    black_bitmap = [[0, 0, 0] for _ in range(132)]
-                    self.send_data("/game_event", {
-                        "game": AFK_GAME,
-                        "event": "LIGHTING",
-                        "data": {
-                            "value": 0,
-                            "frame": {
-                                "bitmap": black_bitmap
-                            }
-                        }
-                    })
-            return dev_ok or kb_ok
+            if not getattr(self, "_lighting_bound", False):
+                self._bind_lighting_event()
+            black_bitmap = [[0, 0, 0] for _ in range(132)]
+            ok = self.send_data("/game_event", {
+                "game": AFK_GAME,
+                "event": "LIGHTING",
+                "data": {
+                    "value": 0,
+                    "frame": {
+                        "bitmap": black_bitmap
+                    }
+                }
+            })
+            return bool(ok)
 
         # Waking from AFK (active=True):
-        # 1. Clean up temporary GameSense session FIRST if it was ever bound,
-        #    so any GoLisp `device reset:` signal executes while LEDs are still unpowered.
-        if getattr(self, "_lighting_bound", False):
-            self.send_data("/remove_game_event", {"game": AFK_GAME, "event": "LIGHTING"}, ignore_errors=True)
-            self.send_data("/stop_game", {"game": AFK_GAME}, ignore_errors=True)
-            self.send_data("/remove_game", {"game": AFK_GAME}, ignore_errors=True)
-            self._lighting_bound = False
-            self._last_lighting_release_ts = time()
-            sleep(0.05)
-
-        # 2. Single-pass atomic restore of native configurations:
-        #    Deploys original user settings directly to hardware in one go.
-        #    Zero flicker, zero reset, zero second forceDeploy!
-        if getattr(self, "_afk_saved_device_configs", None):
-            return self._restore_device_configs()
-        else:
-            self._redeploy_engine_active_configs()
-            return True
+        return self.release_lighting_to_gg(force=True)
 
     def clear_rgb(self):
         self.set_lighting(False)

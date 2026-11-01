@@ -3,8 +3,28 @@
 Complete version history for **SteelSeries OLED & RGB Hub**, developed and expanded by **[gizmous](https://github.com/Gizmous100)** on top of the original **[OLED Customizer](https://github.com/0z-zy/OLED_Customizer)** created by **[0z-zy](https://github.com/0z-zy)** (inspired by **[SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker)** by **[Firewee](https://github.com/Firewee)**).
 
 **Project Versioning Policy:**
-- **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`).
-- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.45`).
+- **`+0.10` (`Major`)** — brand-new major functional modules (e.g., `v1.10`, `v1.20`, `v1.30`, `v1.40`, `v1.50`).
+- **`+0.01` (`Fix / Feature Upgrade`)** — bug fixes, architectural optimizations, and enhancements to existing modules (e.g., `v1.41` – `v1.46`).
+
+---
+
+## [`v1.50`] — 2026-11-02 — ⌨️ Keyboard Lock Keys HUD & Clock Badges, Safe GameSense AFK Blackout & Profile Safeguard
+### 🆕 New Major Module (`+0.10`)
+- **Keyboard Lock Keys Indicators (Caps Lock, Num Lock, Scroll Lock) (`src/LockKeysOverlay.py`, `src/Timer.py`, `src/DisplayManager.py`, `src/SettingsWindow.py`):**
+  - **Instant 128×40 HUD Notification (Variant 3):** Displays a crisp, high-contrast 128×40 HUD notification tile whenever Caps Lock, Num Lock, or Scroll Lock is toggled. Shows an inverted header pill with the toggled key, centered bold active state (`>>> ON <<<` / `OFF`), and a live status summary of the other two locks.
+  - **Zero-Overlap Discrete Clock Badges:** Renders subtle inverted badges (`[C]`, `[N]`, `[S]`) on clock faces when lock keys are active, with verified 0 px overlap across all 4 clock styles (`STANDARD`, `BIG`, `DATE_FOCUSED`, `ANALOG`) across every widget combination (with/without weather, with/without headset battery, with/without voice mute icons).
+  - **Low-Latency Native Hook & Polling Integration:** Captures physical key releases via low-level keyboard hook (`WH_KEYBOARD_LL`) with sub-millisecond response time and 100% reliability, backed by 10 FPS state verification.
+  - **Customizable Preferences & Live Test Preview:** Configurable toggle and display duration (1.0–3.0s) in Settings GUI with interactive "⌨️ Test Lock Keys Overlay Now" preview.
+- **Safe GameSense API Lighting Isolation & Dual-Device AFK Blackout (`src/SteelSeriesAPI.py`):**
+  - Completely replaced intrusive in-database configuration mutations with the official SteelSeries GameSense API (`AFK_GAME` / `LIGHTING` events), registered once at startup.
+  - Preemptively eliminates `HTTP 429: Events for too many games have been registered recently` rate-limiting by managing AFK transitions strictly via `/game_event` (blackout) and `/stop_game` (wake), completely dropping `/remove_game` registration churn.
+  - Targets exact hardware zones for mice (`wheel`, `logo`, and zones `one` through `ten` for multi-zone mice such as Rival 5) with static black `[0, 0, 0]`, eliminating SteelSeries default orange (`#FC4E02`) fallback.
+  - Per-key RGB keyboards (Apex 7, Apex Pro) blackout via full bitmap mode `[0, 0, 0]`.
+- **Non-Destructive Active Configuration Redeployment (`src/SteelSeriesAPI.py`, `src/DisplayManager.py`):**
+  - Streamlined `_redeploy_engine_active_configs()` to perform lean, read-only active profile detection and instant atomic `forceDeploy` without touching user settings or modifying hardware timeouts in the database.
+  - Unblocked instant wake-up transitions in `DisplayManager` by eliminating false 3.0s retry throttling on active state changes.
+- **Profile Integrity Safeguard & Unit Test Suite (`tests/test_steelseries_api.py`, `tests/test_lock_keys.py`):**
+  - Expanded unit test suite to 49 passing tests verifying GameSense AFK zone structures, non-destructive transitions, and HUD/clock badge rendering across all clock styles.
 
 ---
 

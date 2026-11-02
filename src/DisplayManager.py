@@ -239,9 +239,14 @@ class DisplayManager:
             try:
                 self._xinput = ctypes.windll.xinput1_3
             except OSError:
-                self._xinput = None
+                try:
+                    self._xinput = ctypes.windll.xinput9_1_0
+                except OSError:
+                    self._xinput = None
         self._last_gamepad_packets = [0, 0, 0, 0]
         self._last_gamepad_input_ms = now_ms
+        self._gamepad_conn_cached_ts = 0.0
+        self._gamepad_conn_cached_val = False
 
         # Spotify worker thread (single persistent thread instead of spawning new ones)
         self._spotify_queue = Queue(maxsize=1)
@@ -373,6 +378,25 @@ class DisplayManager:
                 continue
             except Exception:
                 pass
+
+    def _is_gamepad_connected(self) -> bool:
+        now = time()
+        if (now - getattr(self, "_gamepad_conn_cached_ts", 0.0)) < 1.0:
+            return getattr(self, "_gamepad_conn_cached_val", False)
+
+        connected = False
+        if getattr(self, "_xinput", None):
+            state = XINPUT_STATE()
+            for i in range(4):
+                try:
+                    if self._xinput.XInputGetState(i, ctypes.byref(state)) == 0:
+                        connected = True
+                        break
+                except Exception:
+                    pass
+        self._gamepad_conn_cached_ts = now
+        self._gamepad_conn_cached_val = connected
+        return connected
 
     def _check_gamepad_activity(self) -> bool:
         if not getattr(self, "_xinput", None):
@@ -1191,7 +1215,14 @@ class DisplayManager:
                     last_input_tick, win_idle_ms = get_last_input_info()
                     hook_idle_ms = max(0, now_ms - self._last_hook_input_ms) if self._last_hook_input_ms > 0 else win_idle_ms
                     cursor_idle_ms = max(0, now_ms - self._last_cursor_move_ms) if self._last_cursor_move_ms > 0 else win_idle_ms
-                    idle_ms = min(win_idle_ms, hook_idle_ms, cursor_idle_ms)
+
+                    # When a gamepad is connected or an external device repeatedly resets Windows GetLastInputInfo
+                    # while keyboard and mouse are idle, decouple idle tracking so gamepad polling doesn't keep AFK awake.
+                    gamepad_or_external_active = self._is_gamepad_connected() or (min(hook_idle_ms, cursor_idle_ms) > 5000 and win_idle_ms < 2500)
+                    if gamepad_or_external_active:
+                        idle_ms = min(hook_idle_ms, cursor_idle_ms)
+                    else:
+                        idle_ms = min(win_idle_ms, hook_idle_ms, cursor_idle_ms)
 
                     if not self._is_afk:
                         # User is currently active: enter AFK when keyboard & mouse idle time exceeds timeout
@@ -1225,7 +1256,7 @@ class DisplayManager:
                             # 1. Any physical keyboard keypress
                             # 2. Any physical mouse button click or wheel scroll
                             # 3. Intentional mouse movement (>= 10 pixels from baseline)
-                            # 4. Fallback user input
+                            # 4. Fallback user input (disabled when gamepad/external device generates input)
                             # (Gamepad/controller input intentionally does NOT block AFK or wake keyboard/mouse
                             # when 'Disable Idle / AFK Mode During Games' is disabled in preferences).
                             wake_reason = None
@@ -1242,7 +1273,7 @@ class DisplayManager:
                                     dist_y = abs(cur_pos[1] - self._afk_baseline_cursor_pos[1])
                                     if dist_x >= 10 or dist_y >= 10:
                                         wake_reason = f"mouse movement (dx={dist_x}, dy={dist_y})"
-                            elif (win_idle_ms < 500) and (last_input_tick > self._afk_baseline_input_tick) and ((now_ms - self._afk_settled_time) > 1000):
+                            elif (not gamepad_or_external_active) and (win_idle_ms < 500) and (last_input_tick > self._afk_baseline_input_tick) and ((now_ms - self._afk_settled_time) > 1000):
                                 wake_reason = f"user input detected (idle={win_idle_ms}ms)"
 
                             if wake_reason:

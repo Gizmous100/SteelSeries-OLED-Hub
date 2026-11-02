@@ -8,6 +8,19 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 ---
 
+## [`v1.51`] — 2026-11-02 — 🎮 Gamepad & External Device AFK Idle Decoupling & Sleep Blackout Fix
+### ✨ Fix / Feature Upgrade (`+0.01`)
+- **Gamepad & External Input Idle Decoupling (`src/DisplayManager.py`):**
+  - Resolved an issue where connected XInput controllers (or any external input device generating polling packets / stick deflection) continuously reset Windows `GetLastInputInfo()` system idle timer to zero, preventing AFK mode from ever engaging.
+  - Automatically detects connected gamepads via `XInputGetState` (with 1.0s caching) and detects external device input desynchronization (`hook/cursor idle > 5000ms` while `win_idle < 2500ms`), dynamically decoupling AFK idle tracking to strictly rely on physical keyboard and mouse activity (`min(hook_idle_ms, cursor_idle_ms)`).
+- **Hardened AFK Wake Safeguard (`src/DisplayManager.py`):**
+  - Suppressed the generic `win_idle_ms < 500` fallback wake-up condition whenever a gamepad or external device is active, ensuring that background controller polling packets never prematurely wake the OLED screen, keyboard, or mouse back up.
+  - AFK wake remains 100% responsive strictly to genuine physical user input: keyboard keypresses, mouse button clicks / wheel scrolls, or intentional mouse cursor movement (>= 10 px).
+- **Unit Test Suite & Verification (`tests/test_afk_and_display.py`):**
+  - Updated idle calculation tests to verify that AFK timeout progression is fully preserved during continuous controller polling.
+
+---
+
 ## [`v1.50`] — 2026-11-02 — ⌨️ Keyboard Lock Keys HUD & Clock Badges, Safe GameSense AFK Blackout & Profile Safeguard
 ### 🆕 New Major Module (`+0.10`)
 - **Keyboard Lock Keys Indicators (Caps Lock, Num Lock, Scroll Lock) (`src/LockKeysOverlay.py`, `src/Timer.py`, `src/DisplayManager.py`, `src/SettingsWindow.py`):**

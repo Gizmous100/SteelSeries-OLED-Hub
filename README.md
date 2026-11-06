@@ -46,6 +46,7 @@
 - [🎙️ Discord RPC Setup](#️-discord-rpc-setup)
 - [📦 Repository Structure](#-repository-structure)
 - [📚 Acknowledgments & Credits](#-acknowledgments--credits)
+- [⚖️ Trademark Disclaimer](#️-trademark-disclaimer)
 
 ---
 
@@ -279,6 +280,13 @@ SteelSeries_OLED_Hub/
 - **Author & Maintainer (`v1.51`)**: **[gizmous](https://github.com/Gizmous100)** — author of the `v1.10`–`v1.51` expansions (Wireless Headset Battery HID, Live Weather & Multi-Region Global AQI, 9-Language OLED Localization, Smart AFK + In-Game Suppression, Auto-Game Hardware Monitor, 10-Zone Mouse RGB & GG Config Sync, SMTC/Prime Video Hysteresis, and Adaptive Anti-Jitter Clock Layouts), **vibe-coded in its entirety**.
 - **Original Application & Inspiration**: **[0z-zy](https://github.com/0z-zy)** — creator of the original [OLED Customizer](https://github.com/0z-zy/OLED_Customizer), which served as the direct inspiration and base for this project. All original features created by **0z-zy** are fully preserved in this edition.
 - **Foundational Inspiration**: **[Firewee](https://github.com/Firewee)** — creator of [SteelSeries-Spotify-Linker](https://github.com/Firewee/SteelSeries-Spotify-Linker), whose core OLED & Spotify integration inspired the original project.
+
+---
+
+## ⚖️ Trademark Disclaimer
+
+*SteelSeries*, *Apex*, *Arctis*, *Nova*, *Rival*, and *GameSense* are trademarks or registered trademarks of SteelSeries ApS.  
+**SteelSeries OLED & RGB Hub** is an independent open-source community software project and is not affiliated with, endorsed by, sponsored by, or supported by SteelSeries ApS.
 
 ---
 

@@ -371,24 +371,6 @@ class VolumeOverlay:
         if time() - self.app_start_time > 4.0: self._last_change = time()
         logger.info(f"Fallback mode (Visual Only): Mic mute overlay = {self._last_mic_mute}")
 
-    def set_mic_mute_from_hardware(self, muted):
-        """Called by HIDListener to sync physical headset state to App/Discord."""
-        if muted != self._last_mic_mute:
-            self._last_mic_mute = muted
-            self._mic_changed_externally = True 
-            if time() - self.app_start_time > 4.0:
-                self._last_change = time()
-            logger.info(f"Hardware Mic change propagated: muted={muted}")
-
-            # Snappy UI: If Discord is connected, update the displayed mute state immediately
-            # so the OLED doesn't lag behind the physical button press.
-            if self._discord_connected:
-                self._discord_muted = muted
-
-            # Keep all active system capture devices aligned with headset hardware state.
-            if not self._sync_all_capture_mics(muted, source="Hardware"):
-                logger.debug("Hardware-to-System sync failed: no active capture device was updated")
-
     def _check_discord(self):
         """Lighter check for Discord presence based on existing RPC connection status.
         This avoids expensive process iteration (psutil).

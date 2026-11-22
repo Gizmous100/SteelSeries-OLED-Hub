@@ -7,8 +7,17 @@ import threading
 import uuid
 import logging
 import time
-import msvcrt
-import win32pipe
+
+# Optional pywin32 dependency — guarded so the app starts even without pywin32.
+try:
+    import msvcrt
+    import win32pipe
+    _PYWIN32_AVAILABLE = True
+except ImportError:
+    msvcrt = None  # type: ignore[assignment]
+    win32pipe = None  # type: ignore[assignment]
+    _PYWIN32_AVAILABLE = False
+
 import requests
 
 logger = logging.getLogger("OLED Customizer.DiscordRPC")
@@ -251,6 +260,9 @@ class DiscordIPC:
     def _recv(self, timeout=0.1):
         """Non-blocking read from the IPC pipe."""
         if not self._pipe:
+            return None
+        
+        if not _PYWIN32_AVAILABLE:
             return None
         
         handle = msvcrt.get_osfhandle(self._pipe.fileno())

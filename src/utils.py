@@ -18,11 +18,25 @@ def fetch_app_data_path(content=''):
         _appdata_migrated = True
         try:
             import shutil
+
+            os.makedirs(new_dir, exist_ok=True)
+
+            # config.json is the trigger: only migrate when the new location has
+            # no configuration yet, to avoid overwriting newer settings.
             new_cfg = path.join(new_dir, 'config.json')
             old_cfg = path.join(old_dir, 'config.json')
             if not path.exists(new_cfg) and path.exists(old_cfg):
-                os.makedirs(new_dir, exist_ok=True)
                 shutil.copy2(old_cfg, new_cfg)
+
+                # credentials.json holds the Spotify refresh token. Without it
+                # the user is forced to re-authorize after the rename.
+                file_names = ('credentials.json', 'yt_nowplaying.json')
+                for name in file_names:
+                    old_file = path.join(old_dir, name)
+                    new_file = path.join(new_dir, name)
+                    if path.exists(old_file) and not path.exists(new_file):
+                        shutil.copy2(old_file, new_file)
+
                 old_backups = path.join(old_dir, 'backups')
                 new_backups = path.join(new_dir, 'backups')
                 if path.exists(old_backups) and not path.exists(new_backups):
@@ -91,11 +105,19 @@ def set_startup(enable: bool):
     
     try:
         if getattr(sys, 'frozen', False):
-            exe_path = sys.executable
+            exe_target = sys.executable
+            exe_args = ""
         else:
-            # Dev mode - include the script path
-            exe_path = f"{sys.executable}\" \"{os.path.abspath(sys.argv[0])}"
-        
+            # Dev mode - Task Scheduler needs the interpreter and the script
+            # as separate Execute/Argument fields (quoting a single string here
+            # produced a broken task).
+            exe_target = sys.executable
+            exe_args = f'"{os.path.abspath(sys.argv[0])}"'
+
+        def _ps_quote(value: str) -> str:
+            # PowerShell single-quoted strings escape a quote by doubling it.
+            return value.replace("'", "''")
+
         # Remove legacy task if present
         subprocess.run(
             ['schtasks', '/delete', '/tn', old_task_name, '/f'],
@@ -104,9 +126,12 @@ def set_startup(enable: bool):
         )
 
         if enable:
+            argument = (
+                f" -Argument '{_ps_quote(exe_args)}'" if exe_args else ""
+            )
             # PowerShell script to create a robust task
             ps_cmd = f"""
-            $action = New-ScheduledTaskAction -Execute '{exe_path}'
+            $action = New-ScheduledTaskAction -Execute '{_ps_quote(exe_target)}'{argument}
             $trigger = New-ScheduledTaskTrigger -AtLogon
             $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
             Register-ScheduledTask -TaskName '{task_name}' -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -Force
@@ -121,13 +146,16 @@ def set_startup(enable: bool):
             )
             
             if result.returncode == 0:
-                logger.info(f"Added to startup (Task Scheduler): {exe_path}")
+                logger.info(f"Added to startup (Task Scheduler): {exe_target} {exe_args}".strip())
                 _cleanup_old_registry_startup()
             else:
                 logger.error(f"Failed to create scheduled task: {result.stderr}")
                 # Fallback to simple schtasks if PowerShell fails
+                tr_value = f'"{exe_target}"'
+                if exe_args:
+                    tr_value += f" {exe_args}"
                 subprocess.run(
-                    ['schtasks', '/create', '/tn', task_name, '/tr', f'"{exe_path}"', '/sc', 'onlogon', '/rl', 'highest', '/f'],
+                    ['schtasks', '/create', '/tn', task_name, '/tr', tr_value, '/sc', 'onlogon', '/rl', 'highest', '/f'],
                     creationflags=subprocess.CREATE_NO_WINDOW
                 )
         else:

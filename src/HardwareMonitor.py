@@ -54,6 +54,7 @@ class _LHMWorker:
         self._cache_lock = Lock()
         self._running = False
         self._computer = None
+        self._thread = None
         self._polling_interval = 1000 # Default 1s
         
     def start(self, interval=1000):
@@ -61,7 +62,8 @@ class _LHMWorker:
         if self._running:
             return
         self._running = True
-        Thread(target=self._worker_loop, daemon=True, name="LHM-Worker").start()
+        self._thread = Thread(target=self._worker_loop, daemon=True, name="LHM-Worker")
+        self._thread.start()
         
     def _worker_loop(self):
         """Runs in dedicated thread - owns all COM objects and performs all system polling."""
@@ -84,10 +86,13 @@ class _LHMWorker:
             logger.warning(f"LHM Worker: LHM sensors not available (not Admin?): {e}")
             
         import psutil
-        import wmi
         _wmi_handle = None
+        # `wmi` is optional: a missing module must not kill the worker loop.
         try:
+            import wmi
             _wmi_handle = wmi.WMI(namespace="root/WMI")
+        except ImportError:
+            logger.debug("wmi module unavailable; WMI temperature fallback disabled")
         except Exception:
             pass
 
@@ -184,17 +189,44 @@ class _LHMWorker:
         return sorted(list(gpus))
         
     def stop(self):
-        """Signals worker thread to stop and releases COM locks."""
+        """Signals the worker thread to stop and releases COM locks.
+
+        The thread is joined before Close() so no COM object is torn down while
+        another thread is still using it.
+        """
         self._running = False
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+        self._thread = None
         try:
             if self._computer:
                 self._computer.Close()
         except Exception:
             pass
+        self._computer = None
 
 
-# Global worker instance
+# Global worker instance shared by every HardwareMonitor. A refcount prevents
+# one overlay instance from shutting the worker down while another still uses it.
 _lhm_worker = _LHMWorker()
+_lhm_refs = 0
+_lhm_ref_lock = Lock()
+
+
+def _acquire_lhm_worker():
+    global _lhm_refs
+    with _lhm_ref_lock:
+        _lhm_refs += 1
+
+
+def _release_lhm_worker():
+    global _lhm_refs
+    with _lhm_ref_lock:
+        if _lhm_refs > 0:
+            _lhm_refs -= 1
+        if _lhm_refs == 0:
+            _lhm_worker.stop()
 
 
 class HardwareMonitor:
@@ -209,10 +241,7 @@ class HardwareMonitor:
         self.timeout = timeout
         self._last_trigger = 0.0
         
-        self.FONT = ImageFont.truetype(
-            font=fetch_content_path("fonts/VerdanaBold.ttf"),
-            size=11,
-        )
+        self.FONT = self._load_font()
         
         self.cpu_icon = self._load_icon("cpu_icon.png")
         self.gpu_icon = self._load_icon("gpu_icon.png")
@@ -220,6 +249,8 @@ class HardwareMonitor:
         
         interval = preferences.get_preference("hw_polling_interval") or 1000
         _lhm_worker.start(interval)
+        _acquire_lhm_worker()
+        self._lhm_acquired = True
         
         self.show_fps = bool(preferences.get_preference("show_game_fps"))
         self.auto_switch_game = bool(preferences.get_preference("auto_hw_monitor_game"))
@@ -240,6 +271,30 @@ class HardwareMonitor:
         _lhm_worker._polling_interval = interval
         if not _lhm_worker._running:
             _lhm_worker.start(interval)
+        # Only (re-)acquire if we don't already hold a reference, to avoid
+        # leaking refcount on repeated preference reloads.
+        if getattr(self, "_lhm_acquired", False):
+            self._lhm_acquired = True
+        else:
+            _acquire_lhm_worker()
+            self._lhm_acquired = True
+
+    def _load_font(self):
+        """Load the OLED font, falling back to a system font if it is missing."""
+        try:
+            font_path = fetch_content_path("fonts/VerdanaBold.ttf")
+            if os.path.exists(font_path):
+                return ImageFont.truetype(font=font_path, size=11)
+            logger.warning("OLED font not found at %s; using system fallback", font_path)
+        except Exception as e:
+            logger.warning("Could not load OLED font (%s); using system fallback", e)
+
+        for name in ("arialbd.ttf", "arial.ttf"):
+            try:
+                return ImageFont.truetype(name, 11)
+            except Exception:
+                continue
+        return ImageFont.load_default()
 
     def _load_icon(self, filename):
         try:
@@ -367,9 +422,11 @@ class HardwareMonitor:
     def stop(self):
         try:
             self.fps_monitor.stop()
-            _lhm_worker.stop()
         except Exception:
             pass
+        if getattr(self, "_lhm_acquired", False):
+            self._lhm_acquired = False
+            _release_lhm_worker()
 
     def get_image(self):
         w, h = self.config.width, self.config.height

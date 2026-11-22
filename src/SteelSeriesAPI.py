@@ -50,8 +50,11 @@ class SteelSeriesAPI:
         self._BACKOFF_DURATIONS = [2.0, 5.0, 10.0]
         self._RESET_THRESHOLD = 10       # Force re-register after this many consecutive errors
         self._is_resetting = False      # Prevent overlapping resets
-        self._lighting_active = True
+        self._lighting_active = bool(initial_active)
+        self._rgb_color = self._normalize_rgb(initial_rgb)
+        self._rgb_enabled = bool(initial_rgb is not None)
         self._lighting_bound = False
+        self._bound_color = (0, 0, 0)
         self._last_lighting_release_ts = 0.0
         self._cleaned_main_game = False
         self._afk_saved_device_configs = {}
@@ -73,12 +76,25 @@ class SteelSeriesAPI:
         # DisplayManager's run loop re-registers once it detects GG running.
         self.retrieve_address(retries=2)
 
+    @staticmethod
+    def _normalize_rgb(value):
+        """Coerce a preference value into a valid (r, g, b) tuple."""
+        try:
+            if isinstance(value, (list, tuple)) and len(value) >= 3:
+                return tuple(max(0, min(255, int(channel))) for channel in value[:3])
+        except (TypeError, ValueError):
+            pass
+        return (0, 0, 0)
+
     def retrieve_address(self, retries=None):
         """
         Locate coreProps.json and register with the GameSense API.
-        If retries is None, loops forever.
+        If retries is None, defaults to a bounded number of attempts
+        (previously looped forever, which could hang startup when GG is absent).
         Otherwise attempts specified number of retries before giving up.
         """
+        if retries is None:
+            retries = 10  # bounded default: ~50s total, then give up
         attempt = 0
         while True:
             try:
@@ -120,20 +136,22 @@ class SteelSeriesAPI:
         """Invalidate current connection and force re-registration."""
         if self._is_resetting:
             return
-        self._is_resetting = True
-        try:
-            logger.info("Resetting SteelSeries connection...")
-            self.address = ""
-            self.encrypted_address = ""
-            self.gg_encrypted_address = ""
-            self._lighting_bound = False
-            self._last_lighting_release_ts = 0.0
-            self._afk_saved_device_configs = {}
-            self._afk_saved_mouse_configs = self._afk_saved_device_configs
-            # Limit retries during resets to avoid blocking the main thread forever
-            self.retrieve_address(retries=2)
-        finally:
-            self._is_resetting = False
+        with self._send_lock:
+            self._is_resetting = True
+            try:
+                logger.info("Resetting SteelSeries connection...")
+                self.address = ""
+                self.encrypted_address = ""
+                self.gg_encrypted_address = ""
+                self._lighting_bound = False
+                self._bound_color = (0, 0, 0)
+                self._last_lighting_release_ts = 0.0
+                self._afk_saved_device_configs = {}
+                self._afk_saved_mouse_configs = self._afk_saved_device_configs
+                # Limit retries during resets to avoid blocking the main thread forever
+                self.retrieve_address(retries=2)
+            finally:
+                self._is_resetting = False
 
     def _redeploy_engine_active_configs(self):
         """
@@ -177,10 +195,10 @@ class SteelSeriesAPI:
         except Exception as e:
             logger.debug("Engine active config redeploy skipped/failed: %s", e)
 
-    def _bind_lighting_event(self) -> bool:
+    def _bind_lighting_event(self, color=(0, 0, 0)) -> bool:
         """
         Register the dedicated AFK_GAME and bind its LIGHTING event for Keyboard,
-        Mouse, and RGB zones during AFK blackout using official GameSense API:
+        Mouse, and RGB zones using the official GameSense API.
         - For per-key RGB keyboards (Apex 7, Apex Pro, etc.), GameSense requires
           mode: "bitmap" when targeting zone: "all".
         - For mice (Rival 5, etc.) and RGB zones, targets exact hardware zones
@@ -196,7 +214,8 @@ class SteelSeriesAPI:
             "options": {"enabled": True}
         }, ignore_errors=True)
 
-        black = {"red": 0, "green": 0, "blue": 0}
+        red, green, blue = self._normalize_rgb(color)
+        static_color = {"red": red, "green": green, "blue": blue}
 
         lighting_handlers = [
             # For per-key RGB keyboards (Apex 7, Apex Pro, etc.)
@@ -210,13 +229,13 @@ class SteelSeriesAPI:
                 "device-type": "mouse",
                 "zone": "wheel",
                 "mode": "color",
-                "color": black
+                "color": static_color
             },
             {
                 "device-type": "mouse",
                 "zone": "logo",
                 "mode": "color",
-                "color": black
+                "color": static_color
             },
         ]
 
@@ -226,13 +245,13 @@ class SteelSeriesAPI:
                 "device-type": "rgb-10-zone",
                 "zone": z,
                 "mode": "color",
-                "color": black
+                "color": static_color
             })
             lighting_handlers.append({
                 "device-type": "rgb-zoned-device",
                 "zone": z,
                 "mode": "color",
-                "color": black
+                "color": static_color
             })
 
         # Other zoned hardware (headsets, single/dual zone mice, mousepads)
@@ -241,7 +260,7 @@ class SteelSeriesAPI:
                 "device-type": general_type,
                 "zone": "one",
                 "mode": "color",
-                "color": black
+                "color": static_color
             })
 
         ok = self.send_data("/bind_game_event", {
@@ -252,9 +271,13 @@ class SteelSeriesAPI:
         })
         self._lighting_bound = bool(ok)
         if ok:
-            # Stop session immediately so normal desktop profile is active until AFK
+            self._bound_color = (red, green, blue)
+            # Stop session immediately so normal desktop profile is active until
+            # a real transition asks for the AFK blackout or the user color.
             self.send_data("/stop_game", {"game": AFK_GAME}, ignore_errors=True)
-            logger.info("Bound LIGHTING event on %s for dual-device AFK blackout [0, 0, 0]", AFK_GAME)
+            logger.info(
+                "Bound LIGHTING event on %s (RGB color %s)", AFK_GAME, (red, green, blue)
+            )
         return bool(ok)
 
     def _blackout_device_configs(self) -> bool:
@@ -356,37 +379,70 @@ class SteelSeriesAPI:
             }
         })
 
+    def _ensure_lighting_bound(self, color) -> bool:
+        if getattr(self, "_lighting_bound", False) and getattr(self, "_bound_color", None) == tuple(color):
+            return True
+        return bool(self._bind_lighting_event(tuple(color)))
+
+    def _send_lighting_event(self, value: int, color) -> bool:
+        red, green, blue = self._normalize_rgb(color)
+        bitmap = [[red, green, blue] for _ in range(132)]
+        ok = self.send_data("/game_event", {
+            "game": AFK_GAME,
+            "event": "LIGHTING",
+            "data": {
+                "value": value,
+                "frame": {"bitmap": bitmap},
+            },
+        })
+        return bool(ok)
+
     def set_lighting(self, active: bool):
         """
-        Apply AFK lighting transition using official GameSense API:
-        - active=False (AFK mode): bind AFK_GAME and send black LIGHTING event
-          ([0, 0, 0] across keyboard, mouse, and RGB zones) without touching the database.
-        - active=True (Wake / Normal): cleanly release GameSense AFK session and
-          redeploy native SteelSeries GG Engine active configurations.
+        Apply the two-state lighting transition:
+        - active=False (AFK mode): black [0, 0, 0] on keyboard, mouse and RGB zones.
+        - active=True (Wake): user-selected RGB color when enabled, otherwise
+          release the session and let native SteelSeries GG configs take over.
+
+        Called only on state transitions (never from the render loop) to avoid
+        HTTP 429 responses and mouse profile lock-ups.
         """
         self._lighting_active = bool(active)
 
         if not active:
-            if not getattr(self, "_lighting_bound", False):
-                self._bind_lighting_event()
-            black_bitmap = [[0, 0, 0] for _ in range(132)]
-            ok = self.send_data("/game_event", {
-                "game": AFK_GAME,
-                "event": "LIGHTING",
-                "data": {
-                    "value": 0,
-                    "frame": {
-                        "bitmap": black_bitmap
-                    }
-                }
-            })
-            return bool(ok)
+            self._ensure_lighting_bound((0, 0, 0))
+            return self._send_lighting_event(0, (0, 0, 0))
 
         # Waking from AFK (active=True):
+        if self._rgb_enabled and self._rgb_color != (0, 0, 0):
+            self._ensure_lighting_bound(self._rgb_color)
+            return self._send_lighting_event(1, self._rgb_color)
         return self.release_lighting_to_gg(force=True)
 
+    def set_rgb_color(self, rgb, enabled: bool = True) -> bool:
+        """Store the user RGB preference and apply it on a colour/enable change.
+
+        Re-binding happens only on a real transition, so the render loop never
+        emits LIGHTING events.
+        """
+        color = self._normalize_rgb(rgb)
+        enabled = bool(enabled)
+        if color == self._rgb_color and enabled == self._rgb_enabled:
+            return True
+
+        self._rgb_color = color
+        self._rgb_enabled = enabled
+
+        if self._lighting_active:
+            if self._rgb_enabled and color != (0, 0, 0):
+                self._ensure_lighting_bound(color)
+                return self._send_lighting_event(1, color)
+            return self.release_lighting_to_gg(force=True)
+        # Currently AFK: keep the blackout, the new colour applies on wake.
+        return True
+
     def clear_rgb(self):
-        self.set_lighting(False)
+        self.set_rgb_color((0, 0, 0), False)
 
     def set_mouse_afk(self, active: bool):
         self.set_lighting(not active)
@@ -428,6 +484,30 @@ class SteelSeriesAPI:
         except Exception:
             pass
         return newly_suspended
+
+    def resume_conflicting_apps(self):
+        """Resume any SteelSeries app suspended by :meth:`_stop_conflicting_gg_apps`.
+
+        Without this, the built-in now-playing.exe stayed frozen until the next
+        SteelSeries GG restart.
+        """
+        suspended = getattr(self, "_suspended_pids", None)
+        if not suspended:
+            return
+        try:
+            import psutil
+            for pid in list(suspended):
+                try:
+                    proc = psutil.Process(pid)
+                    if proc.status() == psutil.STATUS_STOPPED:
+                        proc.resume()
+                        logger.info("Resumed conflicting SteelSeries app (PID %d)", pid)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        finally:
+            suspended.clear()
 
     def register_game(self):
         self._stop_conflicting_gg_apps()

@@ -1,15 +1,24 @@
 import requests
+import hashlib
 import os
 import re
 import sys
 import subprocess
 import logging
+import threading
 from version import __version__
 
 logger = logging.getLogger("OLED Customizer.Updater")
 
 REPO_RAW_URL = "https://raw.githubusercontent.com/Gizmous100/SteelSeries-OLED-Hub/main/version.py"
 RELEASE_EXE_URL = "https://github.com/Gizmous100/SteelSeries-OLED-Hub/releases/latest/download/SteelSeries-OLED-Hub.exe"
+RELEASE_API_URL = "https://api.github.com/repos/Gizmous100/SteelSeries-OLED-Hub/releases/latest"
+ASSET_NAME = "SteelSeries-OLED-Hub.exe"
+
+# A real build is tens of megabytes; anything tiny is a captive-portal page.
+MIN_EXE_SIZE = 1 * 1024 * 1024
+
+_update_lock = threading.Lock()
 
 def get_latest_version():
     """Fetches the latest version string from the GitHub repo."""
@@ -34,10 +43,13 @@ def is_update_available():
         return False, None
     
     # Simple version comparison (e.g. "1.2.16" vs "1.2.17")
-    # For more robust comparison, we could use packaging.version
-    local_parts = [int(p) for p in __version__.split('.')]
-    latest_parts = [int(p) for p in latest.split('.')]
-    
+    try:
+        local_parts = [int(p) for p in __version__.split('.')]
+        latest_parts = [int(p) for p in latest.split('.')]
+    except (TypeError, ValueError):
+        logger.warning("Could not parse version strings: local=%r latest=%r", __version__, latest)
+        return False, latest
+
     for i in range(max(len(local_parts), len(latest_parts))):
         lp = local_parts[i] if i < len(local_parts) else 0
         rp = latest_parts[i] if i < len(latest_parts) else 0
@@ -45,11 +57,58 @@ def is_update_available():
             return True, latest
         if lp > rp:
             return False, latest
-            
+
     return False, latest
 
+
+def _expected_sha256():
+    """Return the SHA-256 published for the release asset, if GitHub exposes it."""
+    try:
+        response = requests.get(RELEASE_API_URL, timeout=5)
+        if response.status_code != 200:
+            return None
+        for asset in response.json().get("assets", []):
+            if asset.get("name") == ASSET_NAME:
+                digest = asset.get("digest") or ""
+                if digest.startswith("sha256:"):
+                    return digest.split(":", 1)[1].lower()
+    except Exception as e:
+        logger.debug("Could not read release digest: %s", e)
+    return None
+
+
+def _file_sha256(path):
+    sha = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            sha.update(chunk)
+    return sha.hexdigest().lower()
+
+
+def _valid_download(path) -> bool:
+    """Basic sanity checks: a real PE binary of plausible size."""
+    try:
+        if os.path.getsize(path) < MIN_EXE_SIZE:
+            logger.error("Downloaded update is too small (%d bytes)", os.path.getsize(path))
+            return False
+        with open(path, "rb") as f:
+            if f.read(2) != b"MZ":
+                logger.error("Downloaded update is not a Windows executable (missing MZ header)")
+                return False
+        return True
+    except OSError as e:
+        logger.error("Could not validate downloaded update: %s", e)
+        return False
+
 def start_update_process():
-    """Downloads the new version and triggers the self-replacement script."""
+    """Download, validate and in-place replace the running executable.
+
+    Must never run concurrently (the tray may fire it twice).
+    """
+    if not _update_lock.acquire(blocking=False):
+        logger.warning("An update is already in progress; ignoring duplicate request.")
+        return False
+
     try:
         if not getattr(sys, 'frozen', False):
             logger.warning("Auto-update is only available in the built executable.")
@@ -57,18 +116,51 @@ def start_update_process():
 
         current_exe = sys.executable
         new_exe = current_exe + ".new"
-        
+        old_exe = current_exe + ".old"
+
         # 1. Download the latest EXE
         logger.info(f"Downloading update from {RELEASE_EXE_URL}...")
         response = requests.get(RELEASE_EXE_URL, stream=True, timeout=30)
         if response.status_code != 200:
             logger.error(f"Failed to download update: HTTP {response.status_code}")
             return False
-            
+
+        expected_size = response.headers.get("Content-Length")
+        downloaded = 0
         with open(new_exe, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
+                if not chunk:
+                    continue
                 f.write(chunk)
-        
+                downloaded += len(chunk)
+            f.flush()
+            os.fsync(f.fileno())
+
+        if expected_size and expected_size.isdigit() and downloaded != int(expected_size):
+            logger.error(
+                "Update download is truncated (%d of %s bytes)", downloaded, expected_size
+            )
+            _safe_remove(new_exe)
+            return False
+
+        # 2. Integrity checks: real PE binary + published SHA-256 when available.
+        if not _valid_download(new_exe):
+            _safe_remove(new_exe)
+            return False
+
+        expected_sha = _expected_sha256()
+        if expected_sha:
+            actual_sha = _file_sha256(new_exe)
+            if actual_sha != expected_sha:
+                logger.error(
+                    "Update checksum mismatch (expected %s, got %s)", expected_sha, actual_sha
+                )
+                _safe_remove(new_exe)
+                return False
+            logger.info("Update SHA-256 verified.")
+        else:
+            logger.warning("Release digest unavailable; only basic integrity checks were applied.")
+
         # Remove "Mark of the Web" — Windows blocks DLL extraction from internet-downloaded exes
         try:
             zone_file = new_exe + ":Zone.Identifier"
@@ -76,71 +168,52 @@ def start_update_process():
                 os.remove(zone_file)
         except Exception:
             pass
-        # Also try via command-line (more reliable for ADS removal)
         try:
-            subprocess.run(["powershell", "-Command", f'Unblock-File -Path "{new_exe}"'], 
-                          capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
+            subprocess.run(["powershell", "-Command", f'Unblock-File -Path "{new_exe}"'],
+                           capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
         except Exception:
             pass
-                
-        # Plan M: In-Place Update with Job Breakaway
-        logger.info("Executing In-Place Swap (Plan M)...")
+
+        # 3. In-place swap with rollback.
+        logger.info("Executing In-Place Swap...")
         try:
-            old_exe = current_exe + ".old"
-            
-            # Clean up previous old file if it exists
             if os.path.exists(old_exe):
                 try:
                     os.remove(old_exe)
                 except Exception as e:
                     logger.warning(f"Could not remove previous .old file: {e}")
-            
-            # 1. Rename the currently running executable to free up its name
-            # Windows allows renaming open files, but not deleting them.
+                    _safe_remove(new_exe)
+                    return False
+
+            # Windows allows renaming an open executable, but not deleting it.
             os.rename(current_exe, old_exe)
-            
-            # 2. Put the new executable in the original spot
-            os.rename(new_exe, current_exe)
-            
-            # 3. Launch the new version directly using OS-level Breakaway and UAC Elevation
-            # We explicitly DO NOT strip _MEIPASS because the new instance needs it 
-            # to know where its bundled fonts/assets are extracted.
-            # We use ShellExecuteW with "runas" to guarantee UAC elevation.
+            try:
+                os.rename(new_exe, current_exe)
+            except Exception:
+                # Second rename failed — put the original executable back.
+                if os.path.exists(old_exe) and not os.path.exists(current_exe):
+                    os.rename(old_exe, current_exe)
+                raise
+
+            # 4. Launch the new version (UAC elevation, detached from this job).
             logger.info("Launching new executable requesting UAC Elevation...")
-            
             import ctypes
             # SW_SHOWNORMAL = 1
             ret = ctypes.windll.shell32.ShellExecuteW(
-                None, 
-                "runas", 
-                current_exe, 
-                None, 
-                os.path.dirname(current_exe), 
+                None,
+                "runas",
+                current_exe,
+                None,
+                os.path.dirname(current_exe),
                 1
             )
-            
+
             if ret <= 32:
-                 logger.warning(f"ShellExecuteW runas failed (code {ret}). Falling back to Popen.")
-                 creation_flags = 0x01000000 | 0x00000008 # CREATE_BREAKAWAY_FROM_JOB | DETACHED_PROCESS
-                 subprocess.Popen([current_exe], creationflags=creation_flags)
-            
-            # 4. Gracefully release all file handles to _MEIPASS
-            # If we rigidly call os._exit(0), ctypes holds onto PresentMon.dll, preventing
-            # PyInstaller's C-level bootloader from deleting the temporary `_MEIxxxxx` folder.
-            # We must explicitly try to free the DLL and use sys.exit(0) to trigger atexit hooks.
-            logger.info("Releasing DLL locks and shutting down gracefully...")
-            
-            try:
-                from src.fps_monitor import FPSMonitor
-                fps = FPSMonitor()
-                if fps._lib:
-                    import ctypes
-                    # FreeLibrary properly unloads the DLL handle
-                    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-                    kernel32.FreeLibrary(fps._lib._handle)
-            except Exception:
-                pass
-                
+                logger.warning(f"ShellExecuteW runas failed (code {ret}). Falling back to Popen.")
+                creation_flags = 0x01000000 | 0x00000008  # CREATE_BREAKAWAY_FROM_JOB | DETACHED_PROCESS
+                subprocess.Popen([current_exe], creationflags=creation_flags)
+
+            # 5. Release hardware resources before terminating.
             try:
                 # Tell background hardware threads to shut down and release WMI/COM locks
                 from src.HardwareMonitor import _lhm_worker
@@ -148,8 +221,25 @@ def start_update_process():
             except Exception:
                 pass
 
-            sys.exit(0)
-             
+            logging.getLogger().info("Update installed; terminating the old process.")
+            for handler in logging.getLogger().handlers:
+                try:
+                    handler.flush()
+                except Exception:
+                    pass
+
+            # Clean up any leftover temporary update files before exit
+            _safe_remove(current_exe + ".new")
+
+            if threading.current_thread() is threading.main_thread():
+                # Normal shutdown path: atexit hooks still run.
+                sys.exit(0)
+            else:
+                # The tray calls this from a worker thread. sys.exit() would
+                # only end that thread and leave two instances running, so the
+                # process must be terminated explicitly.
+                os._exit(0)
+
         except Exception as e:
             logger.error(f"In-Place update failed: {e}")
             # Try to undo the rename if the swap failed
@@ -158,8 +248,25 @@ def start_update_process():
                     os.rename(old_exe, current_exe)
             except Exception:
                 pass
+            _safe_remove(new_exe)
             return False
-            
+
     except Exception as e:
         logger.error(f"Update failed: {e}")
+        _safe_remove(current_exe + ".new")
         return False
+    finally:
+        try:
+            _update_lock.release()
+        except RuntimeError:
+            pass
+        # Always clean up leftover .new file on any exit path
+        _safe_remove(current_exe + ".new")
+
+
+def _safe_remove(path):
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass

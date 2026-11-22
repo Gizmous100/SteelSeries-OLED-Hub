@@ -23,15 +23,22 @@ def exit_app(icon):
     
     logger.info("Exit triggered - starting shutdown sequence")
     
+    my_pid = os.getpid()
+    lock_file_path = os.path.join(os.path.expandvars(r"%APPDATA%\SteelSeries OLED Hub"), ".lock")
+    
     # Start a fail-safe "bomb" thread that forces exit after 2.5 seconds
     def force_exit_bomb():
         time.sleep(2.5)
         logger.warning("Shutdown timeout reached! Forcing os._exit(0)")
-        # Final attempt at lock removal
-        lock_file_path = fetch_app_data_path('.lock')
+        # Final attempt at lock removal — only if we still own it
         if os.path.exists(lock_file_path):
-            try: os.unlink(lock_file_path)
-            except: pass
+            try:
+                with open(lock_file_path, "r") as f:
+                    owner = f.read().strip()
+                if owner == str(my_pid):
+                    os.unlink(lock_file_path)
+            except Exception:
+                pass
         os._exit(0)
     
     Thread(target=force_exit_bomb, daemon=True, name="Exit-Bomb").start()
@@ -51,17 +58,19 @@ def exit_app(icon):
     except Exception as e:
         logger.error(f"Error stopping icon: {e}")
 
-    # Remove lock file on exit
-    lock_file_path = fetch_app_data_path('.lock')
+    # Remove lock file on exit — only when this process owns it
     if os.path.exists(lock_file_path):
         try:
-            os.unlink(lock_file_path)
+            with open(lock_file_path, "r") as f:
+                owner = f.read().strip()
+            if owner == str(my_pid):
+                os.unlink(lock_file_path)
         except Exception:
             pass
 
     logger.info("Disabled systray")
-    logger.info("Shutdown sequence finished - exiting process")
-    # Hard exit immediately
+    logger.info("Shutdown sequence finished")
+    # Hard exit immediately as last resort
     os._exit(0)
 
 
@@ -115,6 +124,11 @@ def toggle_hw_monitor(icon):
         icon.manager.display_clock = False
         icon.manager.user_preferences.preferences["display_timer"] = False
         icon.manager._calculator_active = False  # Also disable calculator
+    elif not icon.manager._calculator_active:
+        # Turning the monitor off restores the clock; otherwise the OLED stayed
+        # frozen on the last hardware frame when no media was playing.
+        icon.manager.display_clock = True
+        icon.manager.user_preferences.preferences["display_timer"] = True
 
     icon.manager.display_hw_monitor = not was_on
     icon.manager.user_preferences.preferences["display_hw_monitor"] = icon.manager.display_hw_monitor
@@ -134,6 +148,11 @@ def toggle_calculator(icon):
         icon.manager.display_hw_monitor = False
         icon.manager.user_preferences.preferences["display_hw_monitor"] = False
         icon.manager.calculator.clear()
+    else:
+        # Returning from the calculator restores the clock instead of leaving
+        # the OLED on the last calculator frame.
+        icon.manager.display_clock = True
+        icon.manager.user_preferences.preferences["display_timer"] = True
 
     icon.manager._calculator_active = activating
     icon.manager.user_preferences.save_preferences()
@@ -542,7 +561,7 @@ def run_systray_async(display_manager):
         Item("Exit", exit_app),
     )
 
-    # Systray ikonunu yükle: yoksa fallback oluştur
+    # Load tray icon: create a fallback if missing
     try:
         icon_path = fetch_content_path("assets/icons/icon.png")
         with Image.open(icon_path) as img:

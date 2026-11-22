@@ -1,18 +1,28 @@
 import asyncio
 import time
 from datetime import datetime, timezone
-from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
-from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionPlaybackStatus
 import logging
 
 logger = logging.getLogger("OLED Customizer.WindowsMedia")
 
+# Optional WinRT dependency — guarded so the app starts even without winrt-* packages.
+try:
+    from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
+    from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionPlaybackStatus
+    _WINRT_AVAILABLE = True
+except ImportError:
+    GlobalSystemMediaTransportControlsSessionManager = None  # type: ignore[assignment]
+    GlobalSystemMediaTransportControlsSessionPlaybackStatus = None  # type: ignore[assignment]
+    _WINRT_AVAILABLE = False
+
 # Only these statuses mean the session has real, active media
-VALID_STATUSES = {
-    GlobalSystemMediaTransportControlsSessionPlaybackStatus.PLAYING,
-    GlobalSystemMediaTransportControlsSessionPlaybackStatus.PAUSED,
-    GlobalSystemMediaTransportControlsSessionPlaybackStatus.CHANGING,
-}
+VALID_STATUSES = set()
+if _WINRT_AVAILABLE and GlobalSystemMediaTransportControlsSessionPlaybackStatus is not None:
+    VALID_STATUSES = {
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus.PLAYING,
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus.PAUSED,
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus.CHANGING,
+    }
 
 class WindowsMedia:
     def __init__(self):
@@ -44,6 +54,8 @@ class WindowsMedia:
     def _is_valid_session(self, session):
         """Check if an SMTC session is real and not stale/garbage.
         Returns False for dead sessions like Discord showing 0:15/0:15."""
+        if not _WINRT_AVAILABLE:
+            return False
         try:
             info = session.get_playback_info()
             if not info:
@@ -107,6 +119,9 @@ class WindowsMedia:
     async def _ensure_manager(self):
         if self.manager:
             return
+        if not _WINRT_AVAILABLE:
+            logger.debug("winrt not available; skipping MediaManager request")
+            return
         try:
             logger.info("Requesting MediaManager...")
             # Add timeout to prevent hang
@@ -121,6 +136,8 @@ class WindowsMedia:
             logger.warning(f"Failed to request MediaManager: {e}")
 
     async def get_media_info(self):
+        if not _WINRT_AVAILABLE:
+            return {}
         try:
             await self._ensure_manager()
             if not self.manager:

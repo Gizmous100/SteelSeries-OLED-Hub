@@ -9,6 +9,7 @@ import logging
 import os
 import socket
 
+from src import secret_store
 from src.utils import fetch_app_data_path
 
 logger = logging.getLogger('SpotifyAPI')
@@ -22,7 +23,7 @@ class SpotifyAPI:
         self.client_id = str(self.config.get_preference('spotify_client_id')).strip()
         self.client_secret = str(self.config.get_preference('spotify_client_secret')).strip()
         self.redirect_uri = str(self.config.get_preference('spotify_redirect_uri')).strip()
-        self.port = int(self.config.get_preference('local_port'))
+        self.port = self._parse_port(self.config.get_preference('local_port'))
 
         self.ready = self._check_configuration()
 
@@ -41,6 +42,15 @@ class SpotifyAPI:
         )
         self._auth_lock = __import__('threading').Lock()
 
+    @staticmethod
+    def _parse_port(value):
+        """Parse the local OAuth port without crashing on a malformed config."""
+        try:
+            port = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return port if 0 < port < 65536 else 0
+
     def _check_configuration(self):
         if not all([self.client_id, self.client_secret, self.redirect_uri, self.port]):
             logger.error(f"Configuration not completed for Spotify API, check configuration file : {self.config.config_path}")
@@ -57,7 +67,7 @@ class SpotifyAPI:
         self.client_id = str(self.config.get_preference('spotify_client_id')).strip()
         self.client_secret = str(self.config.get_preference('spotify_client_secret')).strip()
         self.redirect_uri = str(self.config.get_preference('spotify_redirect_uri')).strip()
-        self.port = int(self.config.get_preference('local_port'))
+        self.port = self._parse_port(self.config.get_preference('local_port'))
         
         self.ready = self._check_configuration()
         
@@ -133,8 +143,8 @@ class SpotifyAPI:
     def load_token(self):
         """Load token from credentials.json. Returns True if valid token exists."""
         try:
-            with open(fetch_app_data_path("credentials.json"), "r") as f:
-                data = loads(f.read())
+            with open(fetch_app_data_path("credentials.json"), "r", encoding="utf-8") as f:
+                data = secret_store.unprotect_mapping(loads(f.read()))
                 self.token = data.get("token", "")
                 self.refresh_token = data.get("refresh_token", "")
                 self.expires = data.get("expires", -1)
@@ -160,12 +170,17 @@ class SpotifyAPI:
         try:
             cred_path = fetch_app_data_path("credentials.json")
             os.makedirs(os.path.dirname(cred_path), exist_ok=True)
-            with open(cred_path, "w") as f:
-                f.write(dumps({
-                    "token": self.token,
-                    "refresh_token": self.refresh_token,
-                    "expires": self.expires
-                }))
+            payload = dumps(secret_store.protect_mapping({
+                "token": self.token,
+                "refresh_token": self.refresh_token,
+                "expires": self.expires
+            }))
+            tmp_path = cred_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, cred_path)
             logger.info("Token saved to credentials.json")
         except Exception as e:
             logger.error(f"Failed to save token: {e}")

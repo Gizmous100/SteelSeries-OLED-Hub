@@ -1,4 +1,5 @@
 import logging
+import os
 from time import time
 import json
 import urllib.request
@@ -90,11 +91,22 @@ class WeatherModule:
         self.last_update = 0
         self.update_interval = 1800  # 30 mins
         
-        self.font = ImageFont.truetype(fetch_content_path("fonts/VerdanaBold.ttf"), 14)
-        self.small_font = ImageFont.truetype(fetch_content_path("fonts/MunroSmall.ttf"), 10)
+        self.font = self._load_font("fonts/VerdanaBold.ttf", 14)
+        self.small_font = self._load_font("fonts/MunroSmall.ttf", 10)
         
         self._thread = None
         self.update()
+
+    def _load_font(self, relative_path, size):
+        """Load an OLED font, falling back to a default font if missing."""
+        try:
+            font_path = fetch_content_path(relative_path)
+            if font_path and os.path.exists(font_path):
+                return ImageFont.truetype(font=font_path, size=size)
+            logger.warning("Weather font not found at %s; using system fallback", relative_path)
+        except Exception as e:
+            logger.warning("Could not load Weather font (%s); using system fallback", e)
+        return ImageFont.load_default()
 
     def update_preferences(self, preferences):
         self.preferences = preferences

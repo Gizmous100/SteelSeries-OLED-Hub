@@ -87,7 +87,7 @@ class FPSMonitor:
 
             self._running = True
             self._worker_gen += 1
-            Thread(target=self._worker_loop, args=(self._worker_gen,),
+            self._thread = Thread(target=self._worker_loop, args=(self._worker_gen,),
                    daemon=True, name="FPS-DLL-Worker").start()
             logger.info("FPSMonitor: Native PresentMon logic started")
             
@@ -123,8 +123,12 @@ class FPSMonitor:
     def stop(self):
         self._running = False
         self._worker_gen += 1  # invalidate any live worker immediately
+        thread = getattr(self, "_thread", None)
+        if thread and thread.is_alive():
+            thread.join(timeout=2.0)
         if self._lib:
             try:
                 with self._dll_lock:
                     self._lib.StopEventRecording()
-            except Exception: pass
+            except Exception:
+                pass

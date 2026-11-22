@@ -60,6 +60,7 @@ class HIDListener(threading.Thread):
         super().__init__(daemon=True, name="HIDListener")
         self.volume_overlay = volume_overlay
         self.device_path = None
+        self._device_path_lock = threading.Lock()
         self._running = False
         self._last_state = None
         self.battery_percent = None  # last battery % reported by the headset
@@ -72,6 +73,12 @@ class HIDListener(threading.Thread):
         self._latched_profile_index = None  # Sticky index of working HID profile
         self._lock = threading.Lock()
         self._handle = None
+        # Writes are serialised on one worker thread. Creating a thread per
+        # call could pile up dozens of concurrent HID writes and race the read
+        # handle; only the newest pending state matters.
+        self._write_cv = threading.Condition()
+        self._pending_write = None
+        self._writer_thread = None
         # Col05 advertises output caps for both report IDs 0x0C and 0x0D.
         # Keep multiple profiles to support firmware variants.
         self._output_profiles = (
@@ -281,18 +288,24 @@ class HIDListener(threading.Thread):
         self._running = True
 
         self.device_path = self.find_device_path()
-        if self.device_path:
-            is_ss = "VID_1038" in self.device_path.upper()
+        with self._device_path_lock:
+            dp = self.device_path
+        if dp:
+            is_ss = "VID_1038" in dp.upper()
             model = "SteelSeries Headset" if is_ss else "HyperX Cloud III"
-            logger.info("HID Discovery: Found %s at %s", model, self.device_path)
-        else:
-            logger.warning("HID Discovery: Headset not found (will retry in background)")
+            logger.info("HID Discovery: Found %s at %s", model, dp)
 
         self.thread = threading.Thread(target=self._listen_loop, daemon=True)
         self.thread.start()
 
-        threading.Thread(target=self._battery_poll_loop, daemon=True,
-                         name="HID-Battery").start()
+        self._writer_thread = threading.Thread(
+            target=self._write_loop, daemon=True, name="HID-Writer"
+        )
+        self._writer_thread.start()
+
+        self._battery_thread = threading.Thread(target=self._battery_poll_loop, daemon=True,
+                         name="HID-Battery")
+        self._battery_thread.start()
 
     # A powered-off / out-of-range headset simply stops answering battery
     # queries (the wireless dongle stays enumerated), so staleness is the
@@ -324,23 +337,26 @@ class HIDListener(threading.Thread):
         NOT park the read handle - the device accepts the write on a separate
         handle while a reader is attached, so the mute button keeps working.
         """
-        if not self.device_path:
+        with self._device_path_lock:
+            dp = self.device_path
+        if not dp:
             return False
 
-        handle = CreateFileW(self.device_path, GENERIC_READ | GENERIC_WRITE,
+        handle = CreateFileW(dp, GENERIC_READ | GENERIC_WRITE,
                              SHARE_READ_WRITE, None, OPEN_EXISTING, 0, None)
         if handle == INVALID_HANDLE_VALUE:
-            handle = CreateFileW(self.device_path, GENERIC_WRITE,
+            handle = CreateFileW(dp, GENERIC_WRITE,
                                  SHARE_READ_WRITE, None, OPEN_EXISTING, 0, None)
         if handle == INVALID_HANDLE_VALUE:
             err = ctypes.get_last_error()
             logger.debug("HID Battery: cannot open write handle, err=%s", err)
             if err in (2, 3, 6, 55, 1167):
-                self.device_path = None
+                with self._device_path_lock:
+                    self.device_path = None
             return False
 
         try:
-            if "VID_1038" in self.device_path.upper():
+            if "VID_1038" in dp.upper():
                 buf_size = 65
                 report = bytearray(buf_size)
                 report[0:2] = bytes((0x00, 0xB0))
@@ -377,17 +393,40 @@ class HIDListener(threading.Thread):
 
     def stop(self):
         self._running = False
+        with self._write_cv:
+            self._pending_write = None
+            self._write_cv.notify_all()
         with self._lock:
             if self._handle and self._handle != INVALID_HANDLE_VALUE:
                 CloseHandle(self._handle)
                 self._handle = None
+        # Join background threads so shutdown is prompt and clean.
+        for t in (self.thread, self._writer_thread, self._battery_thread):
+            if t and t is not threading.current_thread() and t.is_alive():
+                t.join(timeout=2.0)
 
     def set_hardware_mute(self, is_muted):
-        """Request hardware mute change."""
-        issued_at = time()
-        t = threading.Thread(target=self._do_hardware_mute, args=(is_muted, issued_at))
-        t.daemon = True
-        t.start()
+        """Request a hardware mute change (coalesced to the newest request)."""
+        with self._write_cv:
+            self._pending_write = (is_muted, time())
+            self._write_cv.notify()
+
+    def _write_loop(self):
+        """Apply the latest pending HID write without spawning a thread per call."""
+        while self._running:
+            with self._write_cv:
+                while self._running and self._pending_write is None:
+                    self._write_cv.wait(timeout=0.5)
+                if not self._running:
+                    return
+                request = self._pending_write
+                self._pending_write = None
+            if request is None:
+                continue
+            try:
+                self._do_hardware_mute(*request)
+            except Exception as e:
+                logger.debug("HID write worker error: %s", e)
 
     def _do_hardware_mute(self, is_muted, issued_at=None):
         """
@@ -407,11 +446,17 @@ class HIDListener(threading.Thread):
 
         # SteelSeries headsets (VID_1038, e.g. Arctis Nova 7) use a mechanical latching
         # mute button on the earcup and do not accept HyperX Cloud III HID mute output reports.
-        if "VID_1038" in self.device_path.upper():
+        with self._device_path_lock:
+            dp = self.device_path
+        if dp and "VID_1038" in dp.upper():
             logger.debug("HID Sync: Skipping hardware mute write on SteelSeries headset (mechanical mute switch)")
             return False
 
-        logger.debug("HID Sync: Opening write handle to %s", self.device_path)
+        if not dp:
+            logger.warning("HID Sync: Could not find Cloud III device in registry")
+            return False
+
+        logger.debug("HID Sync: Opening write handle to %s", dp)
 
         # Temporarily park the read handle so firmware sees a clean writer.
         # Some HID stacks accept writes only when no active blocking reader is attached.
@@ -439,7 +484,7 @@ class HIDListener(threading.Thread):
         open_mode_used = None
         for desired_access, share_mode, mode_name in open_modes:
             handle = CreateFileW(
-                self.device_path,
+                dp,
                 desired_access,
                 share_mode,
                 None,
@@ -461,7 +506,8 @@ class HIDListener(threading.Thread):
             err = ctypes.get_last_error()
             logger.warning("HID Sync: Cannot open write handle in any mode, err: %s", err)
             # Force re-discovery next time if path became stale.
-            self.device_path = None
+            with self._device_path_lock:
+                self.device_path = None
             return False
 
         logger.debug("HID Sync: Write handle opened successfully (%s)", open_mode_used)
@@ -560,16 +606,23 @@ class HIDListener(threading.Thread):
         
         while self._running:
             if not self.device_path:
-                self.device_path = self.find_device_path()
-                if not self.device_path:
+                with self._device_path_lock:
+                    dp = self.device_path
+                if not dp:
+                    dp = self.find_device_path()
+                    with self._device_path_lock:
+                        self.device_path = dp
+                if not dp:
                     sleep(5)
                     continue
 
             # Open read handle (separate from write handle)
             with self._lock:
                 if not self._handle:
+                    with self._device_path_lock:
+                        dp = self.device_path
                     self._handle = CreateFileW(
-                        self.device_path,
+                        dp,
                         GENERIC_READ,
                         SHARE_READ_WRITE,
                         None,

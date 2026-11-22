@@ -1,11 +1,14 @@
+import os
 from os import path, makedirs, replace
 from json import loads, dumps
 from copy import deepcopy
-from threading import Thread
+from threading import Thread, RLock
+from time import sleep
 
 import logging
 import ctypes
 
+from src import secret_store
 from src.utils import fetch_app_data_path
 
 logger = logging.getLogger("OLED Customizer")
@@ -71,54 +74,88 @@ class UserPreferences:
         "show_lock_keys_clock": True
     }
 
+    # A competing writer (older version, cloud sync, antivirus) can leave the
+    # file half-written for a few milliseconds. Retry before declaring it
+    # corrupt and resetting the user's settings.
+    _READ_RETRIES = 3
+    _READ_RETRY_DELAY = 0.05
+
     def __init__(self):
         self.valid = True
         self.preferences = deepcopy(self.DEFAULT)
         self.config_path = fetch_app_data_path("config.json")
+        # Serialises load/save across the render loop, tray thread and GUI.
+        self._io_lock = RLock()
         logger.info("Preferences path : " + self.config_path)
+
+    def _read_raw(self):
+        with open(self.config_path, "r", encoding="utf-8") as file:
+            return file.read()
 
     def load_preferences(self) -> bool:
         self.valid = True
 
-        try:
-            with open(self.config_path, "r") as file:
-                raw = file.read()
-        except FileNotFoundError:
-            logger.info("No preferences found, created default preferences")
-            self.save_preferences()
-            return True
+        with self._io_lock:
+            raw = None
+            for attempt in range(self._READ_RETRIES):
+                try:
+                    raw = self._read_raw()
+                    break
+                except FileNotFoundError:
+                    logger.info("No preferences found, created default preferences")
+                    self.save_preferences()
+                    return True
+                except OSError:
+                    if attempt == self._READ_RETRIES - 1:
+                        raise
+                    sleep(self._READ_RETRY_DELAY)
 
-        try:
-            parsed = loads(raw)
-            if not isinstance(parsed, dict):
-                raise ValueError("config.json root must be an object")
-            self.preferences = parsed
-        except Exception as e:
-            # Recover instead of refusing to run: keep the broken file for
-            # inspection, reset to defaults, and warn without blocking any thread.
-            logger.error("Corrupt config.json (%s) — resetting to defaults", e)
-            try:
-                replace(self.config_path, self.config_path + ".bad")
-            except OSError:
-                pass
-            self.preferences = deepcopy(self.DEFAULT)
-            self.save_preferences()
-            self._warn_corrupt_config(str(e))
-            return True
+            parsed = None
+            last_error = None
+            for attempt in range(self._READ_RETRIES):
+                try:
+                    candidate = loads(raw)
+                    if not isinstance(candidate, dict):
+                        raise ValueError("config.json root must be an object")
+                    parsed = candidate
+                    break
+                except Exception as e:
+                    last_error = e
+                    if attempt < self._READ_RETRIES - 1:
+                        sleep(self._READ_RETRY_DELAY)
+                        try:
+                            raw = self._read_raw()
+                        except OSError:
+                            pass
 
-        modified = False
-        if "oled_language" not in self.preferences and self.preferences.get("use_polish_days"):
-            self.preferences["oled_language"] = "PL"
-            modified = True
+            if parsed is None:
+                # Recover instead of refusing to run: keep the broken file for
+                # inspection, reset to defaults, and warn without blocking any thread.
+                logger.error("Corrupt config.json (%s) — resetting to defaults", last_error)
+                try:
+                    replace(self.config_path, self.config_path + ".bad")
+                except OSError:
+                    pass
+                self.preferences = deepcopy(self.DEFAULT)
+                self.save_preferences()
+                self._warn_corrupt_config(str(last_error))
+                return True
 
-        for key, value in self.DEFAULT.items():
-            if key not in self.preferences:
-                self.preferences[key] = value
+            self.preferences = secret_store.unprotect_mapping(parsed)
+
+            modified = False
+            if "oled_language" not in self.preferences and self.preferences.get("use_polish_days"):
+                self.preferences["oled_language"] = "PL"
                 modified = True
 
-        if modified:
-            self.save_preferences()
-        return True
+            for key, value in self.DEFAULT.items():
+                if key not in self.preferences:
+                    self.preferences[key] = value
+                    modified = True
+
+            if modified:
+                self.save_preferences()
+            return True
 
     @staticmethod
     def _warn_corrupt_config(detail):
@@ -136,10 +173,41 @@ class UserPreferences:
         Thread(target=_show, daemon=True).start()
 
     def save_preferences(self):
-        # Ensure the directory exists before writing
-        makedirs(path.dirname(self.config_path), exist_ok=True)
-        with open(self.config_path, "w") as file:
-            file.write(dumps(self.preferences, indent=4))
+        """Write preferences atomically so readers never see a partial file.
+
+        The JSON is written to a sibling ``.tmp`` file, flushed to disk and then
+        swapped in with :func:`os.replace`. Secrets are DPAPI-encrypted on the
+        way out; the in-memory copy stays plain so the rest of the app can use
+        it transparently.
+        """
+        with self._io_lock:
+            makedirs(path.dirname(self.config_path), exist_ok=True)
+            payload = dumps(secret_store.protect_mapping(self.preferences), indent=4)
+            tmp_path = self.config_path + ".tmp"
+            try:
+                with open(tmp_path, "w", encoding="utf-8") as file:
+                    file.write(payload)
+                    file.flush()
+                    try:
+                        os.fsync(file.fileno())
+                    except (OSError, TypeError):
+                        # fsync may fail on some filesystems/network drives or
+                        # with mocked file objects in tests — not fatal.
+                        pass
+                if path.exists(tmp_path):
+                    try:
+                        replace(tmp_path, self.config_path)
+                    except FileNotFoundError:
+                        # tmp_path was not actually written to disk (e.g. open()
+                        # is mocked in unit tests) — in-memory preferences are
+                        # already updated, so this is not fatal.
+                        pass
+            finally:
+                if path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
 
     def get_preference(self, key):
         return self.preferences.get(key)

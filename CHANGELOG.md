@@ -8,6 +8,46 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 ---
 
+## [`v1.53`] — 2026-11-09 — 💡 AFK Lighting Sync Fix
+### ✨ Fix / Feature Upgrade (`+0.01`)
+- **AFK Lighting Synchronization (`src/DisplayManager.py`):**
+  - Removed 3-second throttling when entering AFK mode so lighting always turns black immediately with the OLED screen.
+  - Added periodic lighting/AFK consistency check every 30 seconds in the main render loop — if a previous `set_lighting()` call silently failed (e.g. GG temporarily unresponsive), lighting is re-synced to match AFK state.
+  - Fixed user report: lighting staying on while OLED is off during AFK mode.
+
+---
+
+## [`v1.52`] — 2026-11-08 — 🔒 Stability Hardening, Optional Dependency Guards & AFK Logic Merge
+### ✨ Fix / Feature Upgrade (`+0.01`)
+- **Optional Dependency Guards (`src/WindowsMedia.py`, `src/DiscordRPC.py`):**
+  - Wrapped `winrt.windows.media.control` and `pywin32` (`win32pipe`, `msvcrt`) imports in `try/except ImportError` so the application starts even when these optional packages are missing, per AGENTS.md fault-tolerance rule.
+- **Bounded GameSense Address Retrieval (`src/SteelSeriesAPI.py`):**
+  - `retrieve_address(retries=None)` now defaults to a bounded 10 attempts (~50s) instead of looping forever when SteelSeries GG is not running, preventing startup hang.
+- **Side-by-Side Instance Protection (`main.py`):**
+  - Process scan now only terminates orphaned instances from the same executable directory, preserving older versions the user intentionally keeps alongside.
+- **Missing Content Resilience (`src/image_utils.py`, `src/Weather.py`, `src/Timer.py`):**
+  - Missing `content/` assets (icons, fonts) no longer crash the app; fall back to blank placeholders or system fonts.
+- **AFK Logic Merge (`src/DisplayManager.py`, `src/afk_logic.py`):**
+  - Merged tested AFK helpers (`compute_idle_ms`, `is_gamepad_or_external_active`, `wake_reason`, `cursor_moved`) from `src/afk_logic.py` into the render loop, eliminating duplicated inline logic and test/runtime drift.
+  - `trigger_afk_test()` now runs in a background thread to avoid blocking the GUI.
+- **Thread Safety & Lifecycle Hardening (`src/HIDListener.py`, `src/fps_monitor.py`, `src/DisplayManager.py`, `src/SteelSeriesAPI.py`, `src/Systray.py`, `src/HardwareMonitor.py`):**
+  - `HIDListener` keeps references to all background threads and joins them on `stop()`; `device_path` protected by lock against TOCTOU races.
+  - `FPSMonitor.stop()` joins the worker thread.
+  - `_last_sent_frame` dedup logic in `DisplayManager` protected by `_frame_lock` across all 9 write sites.
+  - `SteelSeriesAPI.reset()` guarded by `_send_lock` for state consistency.
+  - `Systray.exit_app()` verifies lock file owner (PID) before removal to protect single-instance guarantee.
+  - `HardwareMonitor.update_preferences()` no longer leaks refcount on repeated preference reloads.
+- **Logging & Update Cleanup (`main.py`, `src/updater.py`, `src/UserPreferences.py`):**
+  - `setup_logging()` falls back to `crash.log` instead of silently swallowing initialization errors.
+  - Updater cleans up leftover `.new` files on all exit paths.
+  - `os.fsync()` and `os.replace()` wrapped in `try/except` for robustness on network filesystems and mocked test environments.
+- **UI & Rendering (`src/Timer.py`, `src/Weather.py`, `src/Systray.py`):**
+  - Temperature degree symbol (`°C`) routed through `normalize_text()` to prevent missing-glyph boxes on 7-bit OLED fonts.
+  - All Turkish comments translated to English per AGENTS.md localization rule.
+- **Removed `run_err.txt` / `run_out.txt`** from repository root (runtime test artifacts).
+
+---
+
 ## [`v1.51`] — 2026-11-02 — 🎮 Gamepad & External Device AFK Idle Decoupling & Sleep Blackout Fix
 ### ✨ Fix / Feature Upgrade (`+0.01`)
 - **Gamepad & External Input Idle Decoupling (`src/DisplayManager.py`):**

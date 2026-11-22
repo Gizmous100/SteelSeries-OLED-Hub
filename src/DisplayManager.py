@@ -20,6 +20,13 @@ from src.HardwareMonitor import HardwareMonitor
 from src.ExtensionReceiver import ExtensionReceiver
 from src.DiscordRPC import DiscordIPC
 from src.HIDListener import HIDListener
+from src.afk_logic import (
+    afk_timeout_ms,
+    compute_idle_ms,
+    cursor_moved,
+    is_gamepad_or_external_active,
+    wake_reason as afk_wake_reason,
+)
 from src.utils import is_process_running, find_steelseries_gg_path, launch_process, get_idle_time_ms, get_last_input_info, get_cursor_pos, get_keyboard_lock_states
 import asyncio
 
@@ -90,6 +97,8 @@ class DisplayManager:
         
         # Lock for thread-safety across shared state like self.player
         self._lock = __import__('threading').Lock()
+        # Lock for _last_sent_frame dedup logic accessed from multiple threads
+        self._frame_lock = __import__('threading').Lock()
 
         self.volume_overlay = VolumeOverlay(config)
         profile_timeout = float(self.user_preferences.get_preference("profile_switch_display_time") or 3.5)
@@ -112,6 +121,7 @@ class DisplayManager:
         self._shift_held = False  # Track Shift for parenthesis detection
         # VK codes for hotkeys (populated by _reload_hotkey_vks via load_preferences)
         self._vk_monitor = None
+        self._vk_weather = None
         self._vk_mute = None
         self._vk_mute_2 = None
         self._vk_calculator = None
@@ -190,15 +200,15 @@ class DisplayManager:
         self._yt_last_playing_ms = 0
         self._yt_paused = True
 
-        # toleranslar (flicker kesmek için)
-        # SIFIRLANDI: Paused olduğu an saate dönmesi için bekleme süreleri kaldırıldı.
-        # Geri eklendi: Ancak polling gecikmesi yüzünden olan flicker'ı engellemek için.
-        # Bu değer PAUSE basıldığında devreye girmez (explicit check var), 
-        # sadece VERİ GELMEDİĞİNDE "hala çalıyor varsay" süresidir.
-        self._spotify_hold_playing_ms = 3000   
-        self._yt_hold_playing_ms = 3000        
+        # Tolerance (to prevent flicker)
+        # RESET: when paused, return-to-clock wait times were removed.
+        # Re-added: to prevent flicker caused by polling delay.
+        # This value does not trigger on PAUSE (explicit check exists),
+        # only serves as "assume still playing" duration when data stops arriving.
+        self._spotify_hold_playing_ms = 3000
+        self._yt_hold_playing_ms = 3000
 
-        # gg flicker azalt
+        # Reduce GG flicker
         self._last_sent_frame = None
         # If startup registration failed (GG not up yet), start False so the
         # run loop triggers a re-registration as soon as GG is detected
@@ -792,6 +802,15 @@ class DisplayManager:
         self._gg_restart_in_progress = True
         import subprocess
         try:
+            # Refuse to kill GG when we cannot relaunch it afterwards.
+            gg_path = find_steelseries_gg_path()
+            if not gg_path:
+                logger.warning(
+                    "Auto-Recovery: SteelSeries GG path not found; leaving the running instance alone."
+                )
+                self.steelseries_api._last_success_time = time()
+                return
+
             # Force-kill all GG processes
             for proc_name in ["SteelSeriesGG.exe", "SteelSeriesGGClient.exe", "SteelSeriesGGEZ.exe"]:
                 subprocess.run(
@@ -803,14 +822,10 @@ class DisplayManager:
             sleep(5)  # Wait for cleanup
 
             # Relaunch GG
-            gg_path = find_steelseries_gg_path()
-            if gg_path:
-                args = r'-dataPath="C:\ProgramData\SteelSeries\GG" -dbEnv=production -auto=true'
-                launch_process(gg_path, args, minimized=True)
-                logger.info("Auto-Recovery: Relaunched SteelSeries GG")
-                sleep(10)  # Wait for API to come up
-            else:
-                logger.warning("Auto-Recovery: Could not find SteelSeries GG path for relaunch")
+            args = r'-dataPath="C:\ProgramData\SteelSeries\GG" -dbEnv=production -auto=true'
+            launch_process(gg_path, args, minimized=True)
+            logger.info("Auto-Recovery: Relaunched SteelSeries GG")
+            sleep(10)  # Wait for API to come up
 
             # Mark GG as 'was not running' so the main loop triggers re-registration
             self._gg_was_running = False
@@ -825,14 +840,19 @@ class DisplayManager:
         self.user_preferences.load_preferences()
         self.update_preferences()
 
+    def _int_pref(self, key, default):
+        """Read an integer preference, falling back on malformed values."""
+        try:
+            return int(self.user_preferences.get_preference(key))
+        except (TypeError, ValueError):
+            return default
+
     def update_preferences(self):
         self.fetch_delay = max(
-            int(self.user_preferences.get_preference("spotify_fetch_delay")),
+            self._int_pref("spotify_fetch_delay", 2),
             1 / self.fps,
         )
-        self.timer_threshold = (
-            max(int(self.user_preferences.get_preference("timer_threshold")), 0) * 1000
-        )
+        self.timer_threshold = max(self._int_pref("timer_threshold", 2), 0) * 1000
         try:
             afk_mins = float(self.user_preferences.get_preference("afk_timeout_minutes") or 5)
         except Exception:
@@ -842,10 +862,17 @@ class DisplayManager:
         self.display_clock = self.user_preferences.get_preference("display_timer")
         self.display_player = self.user_preferences.get_preference("display_player")
         self.display_hw_monitor = self.user_preferences.get_preference("display_hw_monitor")
+        try:
+            # A hand-edited config must not crash the overlay branch every tick.
+            self._weather_display_secs = max(
+                int(self.user_preferences.get_preference("weather_display_time") or 5), 1
+            )
+        except (TypeError, ValueError):
+            self._weather_display_secs = 5
 
         # Sync Layout constants
-        self.config.scrollbar_padding = int(self.user_preferences.get_preference("scrollbar_padding") or 2)
-        self.config.text_padding_left = int(self.user_preferences.get_preference("text_padding_left") or 30)
+        self.config.scrollbar_padding = self._int_pref("scrollbar_padding", 2)
+        self.config.text_padding_left = self._int_pref("text_padding_left", 30)
 
         if hasattr(self.timer, "set_display_seconds"):
             self.timer.set_display_seconds(self.user_preferences.get_preference("display_seconds"))
@@ -909,6 +936,39 @@ class DisplayManager:
         discord_cid = self.user_preferences.get_preference("discord_client_id")
         if hasattr(self, "_discord_ipc"):
             self._discord_ipc.set_client_id(discord_cid)
+
+        # Recreate the localhost receiver when the OAuth port changes. Without
+        # this the redirect URI and the listening socket diverge and Discord
+        # authorization silently breaks until the app is restarted.
+        try:
+            desired_port = int(self.user_preferences.get_preference("discord_local_port") or 8888)
+        except (TypeError, ValueError):
+            desired_port = 8888
+        receiver = getattr(self, "extension_receiver", None)
+        if receiver is not None and receiver.port != desired_port:
+            logger.info(
+                "Discord local port changed (%s -> %s); restarting extension receiver",
+                receiver.port, desired_port,
+            )
+            try:
+                receiver.stop()
+            except Exception as e:
+                logger.debug("Stopping old extension receiver failed: %s", e)
+            self.extension_receiver = ExtensionReceiver(port=desired_port)
+            self.extension_receiver.start()
+            if hasattr(self, "_discord_ipc"):
+                self._discord_ipc.extension_receiver = self.extension_receiver
+
+        # Apply user RGB preference on transitions only (never in the render loop).
+        if hasattr(self, "steelseries_api") and self.steelseries_api:
+            try:
+                self.steelseries_api.set_rgb_color(
+                    self.user_preferences.get_preference("rgb_color"),
+                    bool(self.user_preferences.get_preference("rgb_enabled")),
+                )
+            except Exception as e:
+                logger.debug("RGB preference update failed: %s", e)
+
         self._set_headset_hid_sync_enabled(
             self.user_preferences.get_preference("headset_hid_sync_enabled")
         )
@@ -928,7 +988,11 @@ class DisplayManager:
             # OR we could silently try to fetch if prompt_user=False? No, let's keep it clean.
 
     def trigger_afk_test(self):
-        """Enter AFK mode after a short 1.5s delay so the user can test OLED + RGB blackout."""
+        """Enter AFK mode after a short 1.5s delay so the user can test OLED + RGB blackout.
+        Runs in a background thread to avoid blocking the GUI."""
+        Thread(target=self._run_afk_test, daemon=True, name="AFK-Test").start()
+
+    def _run_afk_test(self):
         sleep(1.5)
         now_ms = int(time() * 1000)
         last_input_tick, _ = get_last_input_info()
@@ -940,12 +1004,14 @@ class DisplayManager:
         self._afk_baseline_input_tick = last_input_tick
         self._afk_baseline_cursor_pos = cur_pos if cur_pos != (0, 0) else None
         self._last_cursor_pos = cur_pos
-        self._last_sent_frame = None
+        with self._frame_lock:
+            self._last_sent_frame = None
         logger.info("AFK State changed to: True (triggered via Settings Test AFK button)")
         self._sync_lighting_state()
         try:
             if self.steelseries_api.send_frame([0] * 640):
-                self._last_sent_frame = [0] * 640
+                with self._frame_lock:
+                    self._last_sent_frame = [0] * 640
                 self._last_frame_sent_time = time()
         except Exception as e:
             logger.debug("Initial AFK test blank frame failed: %s", e)
@@ -958,7 +1024,9 @@ class DisplayManager:
         now = time()
         target_lighting = 0 if self._is_afk else 1
         if self._last_lighting_state != target_lighting:
-            if now - getattr(self, "_last_lighting_failed_ts", 0.0) < 3.0:
+            # AFK blackout is critical — skip throttling when entering AFK
+            # so lighting always turns off immediately with the OLED screen.
+            if target_lighting == 1 and now - getattr(self, "_last_lighting_failed_ts", 0.0) < 3.0:
                 return
             try:
                 if self.steelseries_api.set_lighting(not self._is_afk):
@@ -966,7 +1034,7 @@ class DisplayManager:
                     self._last_lighting_failed_ts = 0.0
                 else:
                     self._last_lighting_failed_ts = now
-                    logger.debug("set_lighting returned False, will retry in 3s")
+                    logger.debug("set_lighting returned False, will retry")
             except Exception as e:
                 self._last_lighting_failed_ts = now
                 logger.debug(f"Failed to set lighting state: {e}")
@@ -1050,7 +1118,7 @@ class DisplayManager:
                     import os
                     if os.path.exists(self._config_file_path):
                         mtime = os.path.getmtime(self._config_file_path)
-                        if self._last_config_mtime and mtime > self._last_config_mtime:
+                        if self._last_config_mtime and mtime != self._last_config_mtime:
                             self._last_config_mtime = mtime
                             logger.info("External configuration change detected, reloading preferences...")
                             self.load_preferences()
@@ -1186,15 +1254,11 @@ class DisplayManager:
 
             # --- AFK Logic ---
             cur_pos = get_cursor_pos()
-            if cur_pos != (0, 0):
-                if self._last_cursor_pos != (0, 0):
-                    dx = abs(cur_pos[0] - self._last_cursor_pos[0])
-                    dy = abs(cur_pos[1] - self._last_cursor_pos[1])
-                    if dx >= 3 or dy >= 3:
-                        self._last_cursor_pos = cur_pos
-                        self._last_cursor_move_ms = now_ms
-                else:
-                    self._last_cursor_pos = cur_pos
+            if cursor_moved(self._last_cursor_pos, cur_pos, threshold=3):
+                self._last_cursor_pos = cur_pos
+                self._last_cursor_move_ms = now_ms
+            elif self._last_cursor_pos == (0, 0) and cur_pos != (0, 0):
+                self._last_cursor_pos = cur_pos
 
             if self.user_preferences.get_preference("afk_enabled"):
                 game_blocks_afk = (
@@ -1216,13 +1280,8 @@ class DisplayManager:
                     hook_idle_ms = max(0, now_ms - self._last_hook_input_ms) if self._last_hook_input_ms > 0 else win_idle_ms
                     cursor_idle_ms = max(0, now_ms - self._last_cursor_move_ms) if self._last_cursor_move_ms > 0 else win_idle_ms
 
-                    # When a gamepad is connected or an external device repeatedly resets Windows GetLastInputInfo
-                    # while keyboard and mouse are idle, decouple idle tracking so gamepad polling doesn't keep AFK awake.
-                    gamepad_or_external_active = self._is_gamepad_connected() or (min(hook_idle_ms, cursor_idle_ms) > 5000 and win_idle_ms < 2500)
-                    if gamepad_or_external_active:
-                        idle_ms = min(hook_idle_ms, cursor_idle_ms)
-                    else:
-                        idle_ms = min(win_idle_ms, hook_idle_ms, cursor_idle_ms)
+                    gamepad_or_external_active = is_gamepad_or_external_active(hook_idle_ms, cursor_idle_ms, win_idle_ms) or self._is_gamepad_connected()
+                    idle_ms = compute_idle_ms(win_idle_ms, hook_idle_ms, cursor_idle_ms, decoupled=gamepad_or_external_active)
 
                     if not self._is_afk:
                         # User is currently active: enter AFK when keyboard & mouse idle time exceeds timeout
@@ -1233,12 +1292,14 @@ class DisplayManager:
                             self._afk_settled_time = now_ms + 1500
                             self._afk_baseline_input_tick = last_input_tick
                             self._afk_baseline_cursor_pos = cur_pos if cur_pos != (0, 0) else None
-                            self._last_sent_frame = None
+                            with self._frame_lock:
+                                self._last_sent_frame = None
                             logger.info(f"AFK State changed to: True (idle: {idle_ms}ms >= {self._afk_timeout_ms}ms)")
                             self._sync_lighting_state()
                             try:
                                 if self.steelseries_api.send_frame([0] * 640):
-                                    self._last_sent_frame = [0] * 640
+                                    with self._frame_lock:
+                                        self._last_sent_frame = [0] * 640
                                     self._last_frame_sent_time = time()
                             except Exception:
                                 pass
@@ -1259,37 +1320,50 @@ class DisplayManager:
                             # 4. Fallback user input (disabled when gamepad/external device generates input)
                             # (Gamepad/controller input intentionally does NOT block AFK or wake keyboard/mouse
                             # when 'Disable Idle / AFK Mode During Games' is disabled in preferences).
-                            wake_reason = None
-                            if self._last_physical_key_ms > self._afk_settled_time:
-                                wake_reason = "keyboard keypress"
-                            elif self._last_physical_mouse_click_ms > self._afk_settled_time:
-                                wake_reason = "mouse click/wheel"
-                            elif cur_pos != (0, 0):
-                                if self._afk_baseline_cursor_pos is None:
-                                    # Baseline wasn't available at settle time (e.g. screen off); latch it now
-                                    self._afk_baseline_cursor_pos = cur_pos
-                                else:
-                                    dist_x = abs(cur_pos[0] - self._afk_baseline_cursor_pos[0])
-                                    dist_y = abs(cur_pos[1] - self._afk_baseline_cursor_pos[1])
-                                    if dist_x >= 10 or dist_y >= 10:
-                                        wake_reason = f"mouse movement (dx={dist_x}, dy={dist_y})"
-                            elif (not gamepad_or_external_active) and (win_idle_ms < 500) and (last_input_tick > self._afk_baseline_input_tick) and ((now_ms - self._afk_settled_time) > 1000):
-                                wake_reason = f"user input detected (idle={win_idle_ms}ms)"
+                            wake_reason_str = afk_wake_reason(
+                                now_ms=now_ms,
+                                settled_time=self._afk_settled_time,
+                                last_physical_key_ms=self._last_physical_key_ms,
+                                last_physical_mouse_click_ms=self._last_physical_mouse_click_ms,
+                                cursor_pos=cur_pos,
+                                baseline_cursor_pos=self._afk_baseline_cursor_pos,
+                                win_idle_ms=win_idle_ms,
+                                last_input_tick=last_input_tick,
+                                baseline_input_tick=self._afk_baseline_input_tick,
+                                decoupled=gamepad_or_external_active,
+                            )
 
-                            if wake_reason:
+                            if wake_reason_str:
+                                # If baseline cursor wasn't available at settle time, latch it now
+                                if cur_pos != (0, 0) and self._afk_baseline_cursor_pos is None:
+                                    self._afk_baseline_cursor_pos = cur_pos
                                 self._is_afk = False
                                 self._afk_toggled_time = now_ms
                                 self._afk_settled = False
-                                self._last_sent_frame = None
-                                logger.info(f"AFK State changed to: False (woken by {wake_reason})")
+                                with self._frame_lock:
+                                    self._last_sent_frame = None
+                                logger.info(f"AFK State changed to: False (woken by {wake_reason_str})")
                                 self._sync_lighting_state()
             else:
                 if self._is_afk:
                     self._is_afk = False
                     self._afk_toggled_time = now_ms
                     self._afk_settled = False
-                    self._last_sent_frame = None
+                    with self._frame_lock:
+                        self._last_sent_frame = None
                     logger.info("AFK State changed to: False (afk_enabled disabled)")
+                    self._sync_lighting_state()
+
+            # Periodic lighting/AFK consistency check (every 30s).
+            # Ensures lighting stays in sync with AFK state even if a previous
+            # set_lighting() call silently failed (e.g. GG temporarily unresponsive).
+            if not hasattr(self, "_last_lighting_check"):
+                self._last_lighting_check = 0
+            if now_ms - self._last_lighting_check > 30000:
+                self._last_lighting_check = now_ms
+                if self._is_afk and self._last_lighting_state != 0:
+                    self._sync_lighting_state()
+                elif not self._is_afk and self._last_lighting_state != 1:
                     self._sync_lighting_state()
 
             frame_data = None
@@ -1330,7 +1404,7 @@ class DisplayManager:
                 img = self.hardware_monitor.get_image()
                 frame_data = convert_to_bitmap(img)
             # Weather hotkey overlay
-            elif hasattr(self, "weather") and self._weather_active_time > 0 and (time() - self._weather_active_time) < int(self.user_preferences.get_preference("weather_display_time")):
+            elif hasattr(self, "weather") and self._weather_active_time > 0 and (time() - self._weather_active_time) < self._weather_display_secs:
                 img = self.weather.get_image()
                 frame_data = convert_to_bitmap(img)
             else:
@@ -1388,10 +1462,14 @@ class DisplayManager:
                 except Exception:
                     pass
 
-            # Auto-restart GG if its API has been unresponsive for 2+ minutes
-            # This catches the case where GG.exe is running but its HTTP API is frozen
+            # Auto-restart GG if its API has been unresponsive for 3+ minutes.
+            # Never kill a GG instance we cannot relaunch afterwards.
             api_silent_secs = now_sec - self.steelseries_api._last_success_time
-            if api_silent_secs > 120 and (now_sec - self._last_gg_restart_attempt) > 300:
+            if (
+                api_silent_secs > 180
+                and self._gg_running_cached
+                and (now_sec - self._last_gg_restart_attempt) > 300
+            ):
                 logger.warning(
                     "Auto-Recovery: SteelSeries API unresponsive for %.0fs, restarting GG...",
                     api_silent_secs
@@ -1524,27 +1602,14 @@ class DisplayManager:
 
                 # Update progress position (jitter-free sync)
                 if not paused:
-                    # --- JITTER-FREE SYNC BAŞLANGIÇ ---
                     current_pos = player.song_position
-                    diff = progress - current_pos  # Gecikme farkı
-                    
-                    # Eğer kullanıcı videoyu ileri/geri sarmışsa (2sn üstü fark) zorla güncelle
-                    if abs(diff) > 2000:
-                         player.seek_song(progress)
-                    
-                    # Eğer duraklatılmışsa (PAUSE), tam yerini göster (flicker burada önemli değil)
-                    elif paused and abs(diff) > 200:
-                         player.seek_song(progress)
-                    
-                    # Eğer çalıyorsa ve fark çok büyük değilse:
-                    # Geriye doğru gidişi engelle (Jitter'ın ana sebebi odur).
-                    # Sadece ciddi bir gerileme/fark varsa müdahale et.
-                    elif not paused:
-                        # Eğer gelen veri mevcut konumumuzdan ÖNDEYSE ve fark 500ms+ ise snap yap
-                        if diff > 500:
-                            player.seek_song(progress)
-                        # Eğer gelen veri ARKADAYSA ama fark küçükse güncelleme YAPMA (flicker önle)
-                    # --- JITTER-FREE SYNC BİTİŞ ---
+                    diff = progress - current_pos
+
+                    # Snap on a deliberate seek (large jump in either direction)
+                    # or when playback is genuinely falling behind by >500 ms.
+                    # Smaller backwards drift is ignored to avoid flicker.
+                    if abs(diff) > 2000 or diff > 500:
+                        player.seek_song(progress)
 
             # pause bookkeeping
             if not player.paused and paused:
@@ -1595,6 +1660,11 @@ class DisplayManager:
         if hasattr(self, "steelseries_api") and self.steelseries_api:
             try:
                 self.steelseries_api.remove_game()
+            except Exception:
+                pass
+            try:
+                # Undo the now-playing.exe suspension applied at registration.
+                self.steelseries_api.resume_conflicting_apps()
             except Exception:
                 pass
 
@@ -2098,7 +2168,8 @@ class DisplayManager:
                     oled_img = self.lock_keys_overlay.get_image()
                     oled_frame = convert_to_bitmap(oled_img)
                     if self.steelseries_api.send_frame(oled_frame):
-                        self._last_sent_frame = oled_frame
+                        with self._frame_lock:
+                            self._last_sent_frame = oled_frame
                 except Exception:
                     pass
 
@@ -2118,7 +2189,8 @@ class DisplayManager:
             oled_img = self.lock_keys_overlay.get_image()
             oled_frame = convert_to_bitmap(oled_img)
             if self.steelseries_api.send_frame(oled_frame):
-                self._last_sent_frame = oled_frame
+                with self._frame_lock:
+                    self._last_sent_frame = oled_frame
         except Exception:
             pass
 
@@ -2279,7 +2351,8 @@ class DisplayManager:
                                         oled_img = self.profile_overlay.get_image()
                                         oled_frame = convert_to_bitmap(oled_img)
                                         if self.steelseries_api.send_frame(oled_frame):
-                                            self._last_sent_frame = oled_frame
+                                            with self._frame_lock:
+                                                self._last_sent_frame = oled_frame
                                             self._last_frame_sent_time = now
                                     except Exception as e:
                                         logger.debug(f"[PROFILE-MONITOR] Instant frame dispatch error: {e}")
@@ -2338,7 +2411,8 @@ class DisplayManager:
                                         oled_img = self.profile_overlay.get_image()
                                         oled_frame = convert_to_bitmap(oled_img)
                                         if self.steelseries_api.send_frame(oled_frame):
-                                            self._last_sent_frame = oled_frame
+                                            with self._frame_lock:
+                                                self._last_sent_frame = oled_frame
                                             self._last_frame_sent_time = now
                                     except Exception:
                                         pass

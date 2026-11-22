@@ -280,7 +280,7 @@ class Timer:
             aqi_str = f"AQI:{aqi}" if aqi >= 100 else f"AQI: {aqi}"
             draw.text((ix, iy + 10), aqi_str, font=self.FONT_NARROW, fill=on, anchor="mm")
 
-        draw.text((ix, iy + 20), f"{temp}°", font=self.FONT_BATT, fill=on, anchor="mm")
+        draw.text((ix, iy + 20), normalize_text(f"{temp}°"), font=self.FONT_BATT, fill=on, anchor="mm")
 
     def _draw_fixed_width_text(self, draw, cx, cy, text, font, fill, anchor="mm"):
         # Calculate fixed character widths for digits to prevent horizontal jitter

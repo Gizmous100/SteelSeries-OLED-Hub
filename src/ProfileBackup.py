@@ -25,6 +25,61 @@ DATABASES = {
     "sonar": os.path.join(SS_BASE, "apps", "sonar", "db", "database.db"),
 }
 
+# Any of these means SteelSeries GG is still writing to its databases.
+GG_PROCESS_NAMES = [
+    "SteelSeriesGG.exe",
+    "SteelSeriesGGClient.exe",
+    "SteelSeriesGGEZ.exe",
+    "SteelSeriesEngine.exe",
+    "SteelSeriesEngine3.exe",
+    "SteelSeriesPrism.exe",
+    "SteelSeriesSonar.exe",
+]
+
+
+def is_gg_running() -> bool:
+    """Return True when any SteelSeries GG component is running."""
+    from src.utils import is_process_running
+    return is_process_running(GG_PROCESS_NAMES)
+
+
+def _sqlite_uri(db_path: str) -> str:
+    from urllib.parse import quote
+    return "file:" + quote(db_path.replace("\\", "/")) + "?mode=ro"
+
+
+def _copy_database(src: str, dest: str) -> bool:
+    """Copy a SQLite database consistently, including committed WAL pages.
+
+    Falls back to a byte copy (plus -wal/-shm sidecars) when the sqlite3
+    module is unavailable or the database cannot be opened.
+    """
+    if sqlite3 is not None:
+        src_conn = None
+        dst_conn = None
+        try:
+            src_conn = sqlite3.connect(_sqlite_uri(src), uri=True, timeout=2.0)
+            dst_conn = sqlite3.connect(dest, timeout=2.0)
+            src_conn.backup(dst_conn)
+            dst_conn.commit()
+            return True
+        except Exception as e:
+            logger.warning("SQLite backup API failed for %s (%s); using file copy", src, e)
+        finally:
+            for conn in (dst_conn, src_conn):
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+    shutil.copy2(src, dest)
+    for suffix in ("-wal", "-shm"):
+        sidecar = src + suffix
+        if os.path.exists(sidecar):
+            shutil.copy2(sidecar, dest + suffix)
+    return True
+
 
 def get_backup_dir() -> str:
     """Get the backup directory path."""
@@ -78,7 +133,7 @@ def backup_profiles(max_backups: int = 5) -> Optional[str]:
         for name, db_path in DATABASES.items():
             if os.path.exists(db_path):
                 dest = os.path.join(backup_path, f"{name}_database.db")
-                shutil.copy2(db_path, dest)
+                _copy_database(db_path, dest)
                 size_mb = os.path.getsize(dest) / 1024 / 1024
                 logger.info(f"Backed up {name}: {size_mb:.1f} MB")
                 backed_up += 1
@@ -128,8 +183,22 @@ def restore_profiles(backup_path: str) -> bool:
     if not os.path.exists(backup_path):
         logger.error(f"Backup not found: {backup_path}")
         return False
-    
+
+    if is_gg_running():
+        logger.error("SteelSeries GG is running! Close it before restoring profiles.")
+        return False
+
     try:
+        # Determine what can actually be restored before touching anything.
+        restorable = [
+            (name, db_path, os.path.join(backup_path, f"{name}_database.db"))
+            for name, db_path in DATABASES.items()
+            if os.path.exists(os.path.join(backup_path, f"{name}_database.db"))
+        ]
+        if not restorable:
+            logger.warning("No database files found in backup")
+            return False
+
         # SAFETY: Create a backup of current databases BEFORE restoring
         logger.info("Creating safety backup before restore...")
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -139,43 +208,34 @@ def restore_profiles(backup_path: str) -> bool:
         for name, db_path in DATABASES.items():
             if os.path.exists(db_path):
                 dest = os.path.join(safety_backup_dir, f"{name}_database.db")
-                shutil.copy2(db_path, dest)
+                _copy_database(db_path, dest)
                 logger.info(f"Safety backup: {name} -> {dest}")
         
         logger.info(f"Safety backup created: {safety_backup_dir}")
         
-        # Clean up WAL/SHM files (these contain uncommitted transactions)
-        for name, db_path in DATABASES.items():
-            wal_path = db_path + "-wal"
-            shm_path = db_path + "-shm"
-            if os.path.exists(wal_path):
-                try:
-                    os.remove(wal_path)
-                    logger.info(f"Removed WAL file: {wal_path}")
-                except Exception as e:
-                    logger.warning(f"Could not remove WAL file {wal_path}: {e}")
-            if os.path.exists(shm_path):
-                try:
-                    os.remove(shm_path)
-                    logger.info(f"Removed SHM file: {shm_path}")
-                except Exception as e:
-                    logger.warning(f"Could not remove SHM file {shm_path}: {e}")
-        
-        # Now restore from backup
+        # Now restore from backup. WAL/SHM sidecars belong to the current
+        # database, so they are removed only for files we are about to replace.
         restored = 0
-        for name, db_path in DATABASES.items():
-            backup_file = os.path.join(backup_path, f"{name}_database.db")
-            if os.path.exists(backup_file):
-                # Create parent dirs if needed
-                os.makedirs(os.path.dirname(db_path), exist_ok=True)
-                shutil.copy2(backup_file, db_path)
-                logger.info(f"Restored {name} database")
-                restored += 1
-        
-        if restored == 0:
-            logger.warning("No database files found in backup")
-            return False
-        
+        for name, db_path, backup_file in restorable:
+            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+
+            for suffix in ("-wal", "-shm"):
+                sidecar = db_path + suffix
+                if os.path.exists(sidecar):
+                    try:
+                        os.remove(sidecar)
+                        logger.info(f"Removed {suffix} file: {sidecar}")
+                    except Exception as e:
+                        logger.warning(f"Could not remove {sidecar}: {e}")
+
+            # Copy to a temporary sibling first so a failed copy never leaves a
+            # half-written database in place.
+            tmp_path = db_path + ".restore_tmp"
+            shutil.copy2(backup_file, tmp_path)
+            os.replace(tmp_path, db_path)
+            logger.info(f"Restored {name} database")
+            restored += 1
+
         logger.info(f"Restore complete! Restored {restored} databases.")
         logger.info(f"If something went wrong, you can restore from: {safety_backup_dir}")
         return True
@@ -194,8 +254,7 @@ def vacuum_databases() -> Tuple[float, float]:
     Returns:
         Tuple of (size_before_mb, size_after_mb).
     """
-    from src.utils import is_process_running
-    if is_process_running(["SteelSeriesGG.exe", "SteelSeriesEngine3.exe"]):
+    if is_gg_running():
         logger.error("SteelSeries GG is running! Please close it before compacting.")
         return (0, 0)
     

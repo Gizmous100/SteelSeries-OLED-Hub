@@ -75,8 +75,14 @@ def _get_cached_icon(filename):
     icon = _icon_cache.get(filename)
     if icon is None:
         icon_path = fetch_content_path(f"assets/icons/{filename}")
-        icon = Image.open(icon_path).convert("1")
-        _icon_cache[filename] = icon
+        try:
+            icon = Image.open(icon_path).convert("1")
+            _icon_cache[filename] = icon
+        except (FileNotFoundError, OSError):
+            # Missing content/ next to EXE — return a blank 18x18 placeholder
+            # so the rest of the UI keeps working without crashing.
+            icon = Image.new("1", (18, 18), 0)
+            _icon_cache[filename] = icon
     return icon
 
 

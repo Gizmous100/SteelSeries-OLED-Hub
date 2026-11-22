@@ -11,12 +11,14 @@ import queue
 import logging
 import ctypes
 import threading
+import secrets
 
 logger = logging.getLogger("OLED Customizer.Settings")
 from version import __version__
 from src.UserPreferences import UserPreferences
 from src.utils import set_startup, is_startup_enabled, fetch_app_data_path as f_app_data
 from src.updater import is_update_available
+from src.ExtensionReceiver import extension_storage
 
 # --- THEME CONSTANTS ---
 class Colors:
@@ -880,11 +882,17 @@ class SettingsGUI:
                     logger.error(f"Discord on_save reload failed: {e}")
             threading.Thread(target=_notify_bg, daemon=True).start()
 
+        # A random state value ties the localhost callback to this exact
+        # authorization attempt (CSRF protection for the OAuth redirect).
+        state = secrets.token_urlsafe(24)
+        extension_storage.set_oauth_state(state)
+
         encoded_redirect = urllib.parse.quote(redirect_uri, safe="")
         url = (
             f"https://discord.com/api/oauth2/authorize?client_id={cid}"
             f"&redirect_uri={encoded_redirect}"
             f"&response_type=code&scope=rpc%20rpc.voice.read%20rpc.voice.write"
+            f"&state={urllib.parse.quote(state, safe='')}"
         )
         webbrowser.open(url)
 
@@ -1045,6 +1053,14 @@ class SettingsGUI:
 
             # Gather all vars with proper type conversion
             for k, v in self.vars.items():
+                # run_on_start is a Windows scheduled task, not a preference.
+                if k == "run_on_start":
+                    continue
+                # Only persist real preferences; transient widget variables must
+                # never leak into config.json.
+                if k not in UserPreferences.DEFAULT:
+                    continue
+
                 val = v.get()
 
                 # Map dropdown display labels back to raw values ("1s (Fast)" -> "1")
@@ -1054,7 +1070,7 @@ class SettingsGUI:
                 # Integer fields
                 if k in ["scrollbar_padding", "text_padding_left", "local_port", "discord_local_port", "spotify_fetch_delay", "hw_polling_interval", "weather_display_time"]:
                     try: val = int(val)
-                    except: val = UserPreferences.DEFAULT.get(k, 0)
+                    except Exception: val = UserPreferences.DEFAULT.get(k, 0)
 
                 if k == "afk_timeout_minutes":
                     try:
@@ -1076,7 +1092,8 @@ class SettingsGUI:
                 self.prefs.preferences[k] = val
             
             self.prefs.preferences["use_polish_days"] = (self.prefs.preferences.get("oled_language") == "PL")
-            self.prefs.preferences["rgb_enabled"] = False
+            # rgb_enabled/rgb_color are real preferences (used by the lighting
+            # layer). Never reset them here — that silently disabled user RGB.
             self.prefs.save_preferences()
 
             want_startup = bool(self.vars["run_on_start"].get())

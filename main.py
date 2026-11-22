@@ -34,12 +34,17 @@ import src.SettingsWindow # Pre-load to avoid background thread import crash
 import tkinter # Pre-load on main thread
 
 def cleanup_old_updates():
-    """Removes the leftover .old executable from an in-place update if it exists."""
+    """Remove the leftover .old executable after a successful update.
+
+    The backup is only deleted when the current executable exists and looks
+    valid; otherwise it is the only runnable copy and must be kept for manual
+    rollback.
+    """
     if getattr(sys, 'frozen', False):
         try:
             exe_path = sys.executable
             old_path = exe_path + ".old"
-            if os.path.exists(old_path):
+            if os.path.exists(old_path) and os.path.exists(exe_path) and os.path.getsize(exe_path) > 0:
                 os.remove(old_path)
                 # logging isn't set up yet, so we just silently remove it
         except Exception:
@@ -96,7 +101,12 @@ def setup_logging(debug=False):
         
     except Exception as e:
         # If logging fails effectively, we are in trouble. Try to write to a local fallback file?
-        pass
+        try:
+            fallback = path.join(path.dirname(__file__), "crash.log")
+            with open(fallback, "a", encoding="utf-8") as f:
+                f.write(f"[{datetime.now()}] setup_logging failed: {e}\n")
+        except Exception:
+            pass
 
 def unhandled_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
@@ -116,6 +126,24 @@ def unhandled_exception(exc_type, exc_value, exc_traceback):
         pass
 
 sys.excepthook = unhandled_exception
+
+
+def thread_unhandled_exception(args):
+    """Log uncaught exceptions from worker threads.
+
+    In a windowed PyInstaller build sys.stderr is None, so without this hook
+    background failures vanished without a trace.
+    """
+    if args.exc_type is SystemExit:
+        return
+    logging.critical(
+        "Uncaught exception in thread %s",
+        getattr(args.thread, "name", "?"),
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
+
+
+threading.excepthook = thread_unhandled_exception
 
 FPS = 10
 
@@ -167,6 +195,8 @@ if __name__ == "__main__":
 
         my_pid = getpid()
         my_ppid = os.getppid()
+        my_exe = path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__)
+        my_exe_dir = path.dirname(my_exe)
         pids_to_kill = set()
 
         # Check if another instance is already running through lock file which contains PID
@@ -181,14 +211,25 @@ if __name__ == "__main__":
             except Exception:
                 pass
 
-        # Also scan process table for any orphaned instances
+        # Also scan process table for orphaned instances from THIS installation only.
+        # Do not kill unrelated processes that happen to share the executable name
+        # but live in a different directory (e.g. an older version the user keeps side-by-side).
         try:
-            for proc in psutil.process_iter(["pid", "name"]):
+            for proc in psutil.process_iter(["pid", "name", "exe"]):
                 try:
                     pname = (proc.info.get("name") or "").lower()
                     pid = proc.info.get("pid")
-                    if pname in ("steelseries-oled-hub.exe", "steelseries-oled-hub", "oled-customizer.exe", "oled-customizer") and pid not in (my_pid, my_ppid):
-                        pids_to_kill.add(pid)
+                    exe = proc.info.get("exe") or ""
+                    if pid in (my_pid, my_ppid):
+                        continue
+                    if pname in ("steelseries-oled-hub.exe", "steelseries-oled-hub", "oled-customizer.exe", "oled-customizer"):
+                        # Only terminate if it's from the same directory as this instance.
+                        try:
+                            proc_exe_dir = path.dirname(path.abspath(exe))
+                        except Exception:
+                            proc_exe_dir = ""
+                        if proc_exe_dir and proc_exe_dir.lower() == my_exe_dir.lower():
+                            pids_to_kill.add(pid)
                 except Exception:
                     pass
         except Exception:
@@ -210,19 +251,42 @@ if __name__ == "__main__":
         if pids_to_kill:
             time.sleep(1)
 
-        # Write lock file with PID to prevent multiple instances
-        with open(lock_file_path, "w") as lock_file:
-            lock_file.write(str(my_pid))
-
-        # Remove lock file on exit
+        # Remove lock file on exit — but only when this process owns it, so a
+        # newer instance's lock is never deleted by an older one.
         def _remove_lock():
             try:
-                if path.exists(lock_file_path):
+                if not path.exists(lock_file_path):
+                    return
+                with open(lock_file_path, "r") as f:
+                    owner = f.read().strip()
+                if owner == str(my_pid):
                     remove(lock_file_path)
             except Exception as e:
                 logger.error("Failed to remove lock file: %s", e)
 
         atexit.register(_remove_lock)
+
+        # Write the lock atomically, then verify that another simultaneous
+        # launch did not overwrite it in the meantime.
+        tmp_lock_path = lock_file_path + ".tmp"
+        with open(tmp_lock_path, "w") as lock_file:
+            lock_file.write(str(my_pid))
+            lock_file.flush()
+            os.fsync(lock_file.fileno())
+        os.replace(tmp_lock_path, lock_file_path)
+
+        time.sleep(0.2)
+        try:
+            with open(lock_file_path, "r") as f:
+                lock_owner = f.read().strip()
+        except OSError:
+            lock_owner = ""
+        if lock_owner != str(my_pid):
+            logger.warning(
+                "Another instance won the startup race (lock owner PID %s); exiting.",
+                lock_owner or "unknown",
+            )
+            sys.exit(0)
 
         config = Config(
             {

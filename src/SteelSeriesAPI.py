@@ -1,5 +1,6 @@
 from json import loads, dumps
-from time import sleep, time
+from time import sleep, time, monotonic
+import threading
 import gc
 from os import environ, path
 import logging
@@ -40,9 +41,14 @@ class SteelSeriesAPI:
         )
         
         # Thread lock to prevent concurrent sends
-        import threading
         self._send_lock = threading.Lock()
-        
+        # Guards the lighting *state* only (short critical sections, never held
+        # across HTTP calls). All lighting I/O runs on the Lighting-Worker thread.
+        self._lighting_lock = threading.Lock()
+        # Prevents overlapping re-registrations (reset() must not hold _send_lock,
+        # otherwise every request it makes times out on that lock).
+        self._reset_lock = threading.Lock()
+
         # Error back-off (escalating: 2s → 5s → 10s)
         self._consecutive_errors = 0
         self._backoff_until = 0
@@ -50,9 +56,19 @@ class SteelSeriesAPI:
         self._BACKOFF_DURATIONS = [2.0, 5.0, 10.0]
         self._RESET_THRESHOLD = 10       # Force re-register after this many consecutive errors
         self._is_resetting = False      # Prevent overlapping resets
+        # Desired lighting state (written by callers, applied by the Lighting-Worker)
         self._lighting_active = bool(initial_active)
         self._rgb_color = self._normalize_rgb(initial_rgb)
         self._rgb_enabled = bool(initial_rgb is not None)
+        self._rgb_black_off = False      # explicit black (per-profile colour) = backlight off
+        self._release_redeploy = True    # False: defer the native-config redeploy (profile switch)
+        self._lighting_seq = 0
+        # Last lighting state GameSense confirmed: ("black",), ("color", rgb), ("released",)
+        # or None when unknown (startup / after re-registration).
+        self._applied_target = None
+        self._redeploy_due = None        # monotonic time of a deferred redeploy (worker only)
+        self._lighting_wakeup = threading.Event()
+        self._lighting_stopped = False
         self._lighting_bound = False
         self._bound_color = (0, 0, 0)
         self._last_lighting_release_ts = 0.0
@@ -72,6 +88,13 @@ class SteelSeriesAPI:
         # Track last successful API response (used by DisplayManager to detect hung GG)
         self._last_success_time = time()
         
+        # Single thread for all lighting I/O: callers never block on HTTP, the newest
+        # requested state always wins, and failed sends are retried with back-off.
+        self._lighting_thread = threading.Thread(
+            target=self._lighting_worker, daemon=True, name="Lighting-Worker"
+        )
+        self._lighting_thread.start()
+
         # Bounded: never loop forever in the constructor. If GG isn't up yet,
         # DisplayManager's run loop re-registers once it detects GG running.
         self.retrieve_address(retries=2)
@@ -133,25 +156,30 @@ class SteelSeriesAPI:
                 sleep(5)
 
     def reset(self):
-        """Invalidate current connection and force re-registration."""
-        if self._is_resetting:
-            return
-        with self._send_lock:
-            self._is_resetting = True
-            try:
-                logger.info("Resetting SteelSeries connection...")
-                self.address = ""
-                self.encrypted_address = ""
-                self.gg_encrypted_address = ""
-                self._lighting_bound = False
-                self._bound_color = (0, 0, 0)
-                self._last_lighting_release_ts = 0.0
-                self._afk_saved_device_configs = {}
-                self._afk_saved_mouse_configs = self._afk_saved_device_configs
-                # Limit retries during resets to avoid blocking the main thread forever
-                self.retrieve_address(retries=2)
-            finally:
-                self._is_resetting = False
+        """Invalidate current connection and force re-registration.
+
+        Must not hold _send_lock while re-registering: every request made by
+        retrieve_address() acquires it, so they all timed out and the hub was
+        never re-registered after a GG restart.
+        """
+        if not self._reset_lock.acquire(blocking=False):
+            return  # a reset is already in progress (e.g. nested via send_data)
+        self._is_resetting = True
+        try:
+            logger.info("Resetting SteelSeries connection...")
+            self.address = ""
+            self.encrypted_address = ""
+            self.gg_encrypted_address = ""
+            self._lighting_bound = False
+            self._bound_color = (0, 0, 0)
+            self._last_lighting_release_ts = 0.0
+            self._afk_saved_device_configs = {}
+            self._afk_saved_mouse_configs = self._afk_saved_device_configs
+            # Limit retries during resets to avoid blocking the main thread forever
+            self.retrieve_address(retries=2)
+        finally:
+            self._is_resetting = False
+            self._reset_lock.release()
 
     def _redeploy_engine_active_configs(self):
         """
@@ -195,7 +223,7 @@ class SteelSeriesAPI:
         except Exception as e:
             logger.debug("Engine active config redeploy skipped/failed: %s", e)
 
-    def _bind_lighting_event(self, color=(0, 0, 0)) -> bool:
+    def _bind_lighting_event(self, color=(0, 0, 0), stop_session: bool = True) -> bool:
         """
         Register the dedicated AFK_GAME and bind its LIGHTING event for Keyboard,
         Mouse, and RGB zones using the official GameSense API.
@@ -272,9 +300,12 @@ class SteelSeriesAPI:
         self._lighting_bound = bool(ok)
         if ok:
             self._bound_color = (red, green, blue)
-            # Stop session immediately so normal desktop profile is active until
-            # a real transition asks for the AFK blackout or the user color.
-            self.send_data("/stop_game", {"game": AFK_GAME}, ignore_errors=True)
+            # At (re-)registration, stop the session immediately so the normal desktop
+            # profile is active until a real transition asks for the AFK blackout or
+            # the user color. Re-binds right before a LIGHTING event skip this, or the
+            # native GG lighting would flash between the bind and the event.
+            if stop_session:
+                self.send_data("/stop_game", {"game": AFK_GAME}, ignore_errors=True)
             logger.info(
                 "Bound LIGHTING event on %s (RGB color %s)", AFK_GAME, (red, green, blue)
             )
@@ -296,11 +327,13 @@ class SteelSeriesAPI:
         """Deprecated backward-compatible alias."""
         return True
 
-    def release_lighting_to_gg(self, force: bool = False) -> bool:
+    def release_lighting_to_gg(self, force: bool = False, redeploy: bool = True) -> bool:
         """
         Cleanly release any AFK GameSense bindings and restore native SteelSeries
         GG Engine configurations.
         Uses /stop_game (not /remove_game) to preserve registration and avoid 429 errors.
+        Returns False when the session could not be stopped, so the caller retries.
+        redeploy=False skips the native-config redeploy (deferred by the caller).
         """
         if not self.address:
             return False
@@ -309,15 +342,17 @@ class SteelSeriesAPI:
             if not force or (now - getattr(self, "_last_lighting_release_ts", 0.0) < 2.0):
                 return True
 
+        ok = True
         if getattr(self, "_lighting_bound", False):
-            self.send_data("/stop_game", {
+            ok = bool(self.send_data("/stop_game", {
                 "game": AFK_GAME
-            }, ignore_errors=True)
+            }, ignore_errors=True))
             self._last_lighting_release_ts = time()
 
-        self._redeploy_engine_active_configs()
-        logger.info("Released AFK lighting (%s) and restored SteelSeries GG Engine native configs", AFK_GAME)
-        return True
+        if redeploy:
+            self._redeploy_engine_active_configs()
+        logger.info("Released AFK lighting (%s) to SteelSeries GG Engine native configs", AFK_GAME)
+        return ok
 
     def bind_game_event(self):
         # Apex 7 Pro OLED = 128x40 (640 byte)
@@ -352,13 +387,15 @@ class SteelSeriesAPI:
             }
         }, ignore_errors=True)
 
-        # 2. Bind LIGHTING on AFK_GAME once at startup
+        # 2. Bind LIGHTING on AFK_GAME once at startup. The device state is unknown
+        #    after (re-)registration, so the Lighting-Worker re-applies the desired
+        #    state: AFK blackout, user/profile colour, or GG native configs.
         self._bind_lighting_event()
-        if not getattr(self, "_lighting_active", True):
-            self.set_lighting(False)
-        else:
-            sleep(0.05)
-            self._redeploy_engine_active_configs()
+        with self._lighting_lock:
+            self._applied_target = None
+            self._release_redeploy = True
+            self._lighting_seq += 1
+        self._lighting_wakeup.set()
 
         logger.info("Bound game event: UPDATE (OLED 128x40)")
 
@@ -382,7 +419,7 @@ class SteelSeriesAPI:
     def _ensure_lighting_bound(self, color) -> bool:
         if getattr(self, "_lighting_bound", False) and getattr(self, "_bound_color", None) == tuple(color):
             return True
-        return bool(self._bind_lighting_event(tuple(color)))
+        return bool(self._bind_lighting_event(tuple(color), stop_session=False))
 
     def _send_lighting_event(self, value: int, color) -> bool:
         red, green, blue = self._normalize_rgb(color)
@@ -397,49 +434,137 @@ class SteelSeriesAPI:
         })
         return bool(ok)
 
-    def set_lighting(self, active: bool):
+    # ------------------------------------------------------------------ lighting
+    # Callers only record the desired state; the Lighting-Worker thread applies it.
+    # LIGHTING events are therefore sent only on real transitions (or retries of a
+    # failed transition), never from the render loop (AGENTS.md).
+
+    _RETRY_DELAYS = (2.0, 5.0, 10.0)
+    _RELEASE_REDEPLOY_DELAY = 2.0   # let GG finish a profile deploy before redeploying
+
+    def _desired_target_locked(self):
+        if not self._lighting_active:
+            return ("black",)
+        if self._rgb_enabled and (self._rgb_color != (0, 0, 0) or self._rgb_black_off):
+            return ("color", self._rgb_color)
+        return ("released",)
+
+    def _owns_lighting(self) -> bool:
+        target = self._applied_target
+        return target is not None and target[0] in ("black", "color")
+
+    def set_lighting(self, active: bool) -> bool:
         """
-        Apply the two-state lighting transition:
+        Request the two-state lighting transition:
         - active=False (AFK mode): black [0, 0, 0] on keyboard, mouse and RGB zones.
         - active=True (Wake): user-selected RGB color when enabled, otherwise
           release the session and let native SteelSeries GG configs take over.
 
+        Non-blocking: the Lighting-Worker applies it (and retries on failure).
         Called only on state transitions (never from the render loop) to avoid
         HTTP 429 responses and mouse profile lock-ups.
         """
-        self._lighting_active = bool(active)
+        with self._lighting_lock:
+            if self._lighting_active != bool(active):
+                self._lighting_active = bool(active)
+                self._lighting_seq += 1
+            self._release_redeploy = True
+            pending = self._desired_target_locked() != self._applied_target
+        if pending:
+            self._lighting_wakeup.set()
+        return True
 
-        if not active:
-            self._ensure_lighting_bound((0, 0, 0))
-            return self._send_lighting_event(0, (0, 0, 0))
+    def set_rgb_color(self, rgb, enabled: bool = True, black_off: bool = False,
+                      redeploy: bool = True) -> bool:
+        """Store the user / profile RGB colour; the Lighting-Worker applies it.
 
-        # Waking from AFK (active=True):
-        if self._rgb_enabled and self._rgb_color != (0, 0, 0):
-            self._ensure_lighting_bound(self._rgb_color)
-            return self._send_lighting_event(1, self._rgb_color)
-        return self.release_lighting_to_gg(force=True)
-
-    def set_rgb_color(self, rgb, enabled: bool = True) -> bool:
-        """Store the user RGB preference and apply it on a colour/enable change.
-
-        Re-binding happens only on a real transition, so the render loop never
-        emits LIGHTING events.
+        Nothing is sent when the resulting lighting state equals the applied one
+        (e.g. profiles sharing a colour, or colour edits while RGB is disabled).
+        black_off=True makes an explicit black colour turn the backlight off
+        (per-profile colours) instead of handing lighting back to GG.
+        redeploy=False defers the native-config redeploy of a release, so a
+        profile switch does not redeploy the outgoing profile's config.
         """
         color = self._normalize_rgb(rgb)
-        enabled = bool(enabled)
-        if color == self._rgb_color and enabled == self._rgb_enabled:
-            return True
-
-        self._rgb_color = color
-        self._rgb_enabled = enabled
-
-        if self._lighting_active:
-            if self._rgb_enabled and color != (0, 0, 0):
-                self._ensure_lighting_bound(color)
-                return self._send_lighting_event(1, color)
-            return self.release_lighting_to_gg(force=True)
-        # Currently AFK: keep the blackout, the new colour applies on wake.
+        with self._lighting_lock:
+            new_state = (color, bool(enabled), bool(black_off))
+            if new_state != (self._rgb_color, self._rgb_enabled, self._rgb_black_off):
+                self._rgb_color, self._rgb_enabled, self._rgb_black_off = new_state
+                self._lighting_seq += 1
+            self._release_redeploy = bool(redeploy)
+            pending = self._desired_target_locked() != self._applied_target
+        if pending:  # also retries a previously failed transition
+            self._lighting_wakeup.set()
         return True
+
+    def stop_lighting_worker(self):
+        self._lighting_stopped = True
+        self._lighting_wakeup.set()
+
+    def _apply_lighting_target(self, target, redeploy: bool) -> bool:
+        kind = target[0]
+        if kind == "black":
+            self._ensure_lighting_bound((0, 0, 0))
+            return self._send_lighting_event(0, (0, 0, 0))
+        if kind == "color":
+            color = target[1]
+            self._ensure_lighting_bound(color)
+            return self._send_lighting_event(1, color)
+        return self.release_lighting_to_gg(force=True, redeploy=redeploy)
+
+    def _apply_pending_lighting(self) -> bool:
+        """Apply the newest desired state; re-check after each send (bounded)."""
+        for _ in range(5):
+            with self._lighting_lock:
+                target = self._desired_target_locked()
+                if target == self._applied_target:
+                    return True
+                redeploy_now = self._release_redeploy
+            if not self._apply_lighting_target(target, redeploy_now):
+                return False
+            with self._lighting_lock:
+                self._applied_target = target
+            if target == ("released",):
+                self._redeploy_due = None if redeploy_now else monotonic() + self._RELEASE_REDEPLOY_DELAY
+            else:
+                self._redeploy_due = None
+        return True
+
+    def _lighting_worker(self):
+        failures = 0
+        retry_delay = None
+        while not self._lighting_stopped:
+            timeout = retry_delay
+            if self._redeploy_due is not None:
+                remaining = max(0.0, self._redeploy_due - monotonic())
+                timeout = remaining if timeout is None else min(timeout, remaining)
+            self._lighting_wakeup.wait(timeout)
+            self._lighting_wakeup.clear()
+            if self._lighting_stopped:
+                break
+            try:
+                # Deferred redeploy after a profile-switch release: by now GG has
+                # deployed the new profile, so the *new* config is redeployed.
+                if self._redeploy_due is not None and monotonic() >= self._redeploy_due:
+                    self._redeploy_due = None
+                    with self._lighting_lock:
+                        still_released = (
+                            self._applied_target == ("released",)
+                            and self._desired_target_locked() == ("released",)
+                        )
+                    if still_released:
+                        self._redeploy_engine_active_configs()
+
+                if self._apply_pending_lighting():
+                    failures, retry_delay = 0, None
+                else:
+                    failures += 1
+                    retry_delay = self._RETRY_DELAYS[min(failures - 1, len(self._RETRY_DELAYS) - 1)]
+                    logger.debug("Lighting transition failed, retrying in %.0fs", retry_delay)
+            except Exception as e:
+                failures += 1
+                retry_delay = self._RETRY_DELAYS[min(failures - 1, len(self._RETRY_DELAYS) - 1)]
+                logger.debug("Lighting worker error: %s", e)
 
     def clear_rgb(self):
         self.set_rgb_color((0, 0, 0), False)
@@ -449,6 +574,7 @@ class SteelSeriesAPI:
 
     def remove_game(self):
         """Cleanly stop and remove GameSense games on exit and restore native GG Engine configs."""
+        self.stop_lighting_worker()
         try:
             for g in (AFK_GAME, GAME):
                 self.send_data("/stop_game", {"game": g}, ignore_errors=True)
@@ -547,7 +673,10 @@ class SteelSeriesAPI:
                 pass
         try:
             self.send_data("/game_heartbeat", {"game": GAME})
-            if getattr(self, "_lighting_bound", False) and not getattr(self, "_lighting_active", True):
+            # AFK_GAME has a 60 s deinitialize timer and lighting events are sent only on
+            # transitions, so keep it alive while it drives the lighting (AFK blackout or
+            # a user / profile colour); otherwise GG reverts the colour after ~60 s.
+            if getattr(self, "_lighting_bound", False) and self._owns_lighting():
                 self.send_data("/game_heartbeat", {"game": AFK_GAME}, ignore_errors=True)
         except Exception:
             pass

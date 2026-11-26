@@ -109,6 +109,11 @@ class DisplayManager:
         self._last_active_loadout_name = ""
         self._test_profile_idx = 0
         self.hardware_monitor = HardwareMonitor(config, self.user_preferences)
+        # Name of the GG loadout/config currently active (set by the profile monitor).
+        # Used so preference saves keep the active profile's colour instead of the global
+        # one. Must exist before the Profile-Monitor thread starts, or its initial sync
+        # could be wiped and the startup profile colour reverted to the global colour.
+        self._active_profile_name = None
         Thread(target=self._profile_monitor_loop, daemon=True, name="Profile-Monitor").start()
         discord_port = self.user_preferences.get_preference("discord_local_port") or 8888
         self.extension_receiver = ExtensionReceiver(port=discord_port)
@@ -119,6 +124,8 @@ class DisplayManager:
         # unlike pynput's Listener which can silently stop receiving events.
         self._ctrl_held = False
         self._shift_held = False  # Track Shift for parenthesis detection
+        self._keys_down = set()          # VKs currently held (key-repeat detection)
+        self._consumed_xbuttons = set()  # Mouse X buttons whose DOWN was suppressed
         # VK codes for hotkeys (populated by _reload_hotkey_vks via load_preferences)
         self._vk_monitor = None
         self._vk_weather = None
@@ -547,7 +554,7 @@ class DisplayManager:
                     # Inject Shift state so ToUnicode resolves the shifted character.
                     # VK_SHIFT (0x10) is the generic one ToUnicode actually checks.
                     # Also set VK_LSHIFT (0xA0) / VK_RSHIFT (0xA1) for completeness.
-                    if self._shift_held:
+                    if user32.GetAsyncKeyState(0x10) & 0x8000:  # VK_SHIFT (OS state)
                         key_state[0x10] = 0x80   # VK_SHIFT  (generic — what ToUnicode uses)
                         key_state[0xA0] = 0x80   # VK_LSHIFT
                         key_state[0xA1] = 0x80   # VK_RSHIFT
@@ -611,10 +618,23 @@ class DisplayManager:
                         if is_up and vk in (0x14, 0x90, 0x91):
                             _enqueue("check_lock_keys")
 
-                        # Only process key-DOWN events for actions below
+                        # Key-repeat detection: holding a hotkey must not fire it again on
+                        # every auto-repeat WM_KEYDOWN. The OS async state confirms the key
+                        # is still held (a key-up lost to the secure desktop cannot stick).
+                        is_repeat = False
                         if is_down:
+                            is_repeat = vk in self._keys_down and bool(user32.GetAsyncKeyState(vk) & 0x8000)
+                            self._keys_down.add(vk)
+                        elif is_up:
+                            self._keys_down.discard(vk)
+
+                        # Only process fresh key-DOWN events for the hotkey actions below
+                        if is_down and not is_repeat:
                             # ---- Calculator toggle: Ctrl + calculator key ----
-                            if self._ctrl_held and self._vk_calculator and vk == self._vk_calculator:
+                            # Ctrl comes from the OS key state (GetAsyncKeyState); the
+                            # hook-tracked flag could stay "held" after Ctrl+Alt+Del.
+                            ctrl_down = bool(user32.GetAsyncKeyState(0x11) & 0x8000)  # VK_CONTROL
+                            if ctrl_down and self._vk_calculator and vk == self._vk_calculator:
                                 self._ctrl_held = False  # Consume modifier
                                 self._calculator_active = not self._calculator_active
                                 if self._calculator_active:
@@ -666,7 +686,10 @@ class DisplayManager:
                                 # Works on TR keyboard, EN keyboard, TKL boards, etc.
                                 scan = ctypes.c_uint32.from_address(addr + 4).value
                                 ch = _vk_to_char(vk, scan)
-                                if ch in "0123456789+-*/.,()":
+                                # `ch and`: _vk_to_char returns "" for arrows, Alt, Win,
+                                # F-keys and media keys, and "" is in every string, so
+                                # those keys used to be swallowed system-wide.
+                                if ch and len(ch) == 1 and ch in "0123456789+-*/.,()":
                                     if is_down:
                                         _enqueue(f"calc_input:{ch}")
                                     is_suppressed = True
@@ -704,25 +727,35 @@ class DisplayManager:
                                 self._last_hook_input_ms = t_now
                                 self._last_physical_mouse_click_ms = t_now
 
-                        if wParam == WM_XBUTTONDOWN:
+                        if wParam in (WM_XBUTTONDOWN, WM_XBUTTONUP):
                             # Read XBUTTON data from memory at lParam + 8
                             mouse_data = ctypes.c_uint32.from_address(addr + 8).value
                             xbutton = (mouse_data >> 16) & 0xFFFF
-                            
+
+                            if wParam == WM_XBUTTONUP:
+                                # Swallow the UP of a button whose DOWN we consumed, otherwise
+                                # the focused app still performs Back / Forward.
+                                if xbutton in self._consumed_xbuttons:
+                                    self._consumed_xbuttons.discard(xbutton)
+                                    return LRESULT(1).value
+                                return user32.CallNextHookEx(None, nCode, wParam, lParam)
+
                             vk = None
                             if xbutton == 1: vk = 0x05 # Mouse 4
                             elif xbutton == 2: vk = 0x06 # Mouse 5
-                            
+
                             if vk:
+                                action = None
                                 if self._vk_monitor and vk == self._vk_monitor:
-                                    _enqueue("trigger_monitor")
-                                    return LRESULT(1).value # Suppress so game doesn't see it (common for side buttons)
-                                if self._vk_weather and vk == self._vk_weather:
-                                    _enqueue("trigger_weather")
-                                    return LRESULT(1).value
-                                if (self._vk_mute and vk == self._vk_mute) or (self._vk_mute_2 and vk == self._vk_mute_2):
-                                    _enqueue("toggle_mute")
-                                    return LRESULT(1).value
+                                    action = "trigger_monitor"
+                                elif self._vk_weather and vk == self._vk_weather:
+                                    action = "trigger_weather"
+                                elif (self._vk_mute and vk == self._vk_mute) or (self._vk_mute_2 and vk == self._vk_mute_2):
+                                    action = "toggle_mute"
+                                if action:
+                                    _enqueue(action)
+                                    self._consumed_xbuttons.add(xbutton)
+                                    return LRESULT(1).value  # Suppress so the game/app doesn't see it
 
                 except Exception:
                     pass
@@ -862,6 +895,18 @@ class DisplayManager:
         self.display_clock = self.user_preferences.get_preference("display_timer")
         self.display_player = self.user_preferences.get_preference("display_player")
         self.display_hw_monitor = self.user_preferences.get_preference("display_hw_monitor")
+        # The tray menu caches its checkmarks when built; rebuild it when a value it
+        # shows changed (startup load, Settings save). Only on change: rebuilding from
+        # a non-tray thread destroys the menu handle, which could close a menu the
+        # user just opened (tray toggles refresh the menu themselves).
+        tray_icon = getattr(self, "tray_icon", None)
+        tray_state = self._tray_menu_snapshot()
+        if tray_icon is not None and tray_state != getattr(self, "_tray_menu_state", None):
+            self._tray_menu_state = tray_state
+            try:
+                tray_icon.update_menu()
+            except Exception as e:
+                logger.debug("Tray menu refresh failed: %s", e)
         try:
             # A hand-edited config must not crash the overlay branch every tick.
             self._weather_display_secs = max(
@@ -960,12 +1005,11 @@ class DisplayManager:
                 self._discord_ipc.extension_receiver = self.extension_receiver
 
         # Apply user RGB preference on transitions only (never in the render loop).
+        # Respect the active profile's colour so saving settings does not revert it.
         if hasattr(self, "steelseries_api") and self.steelseries_api:
             try:
-                self.steelseries_api.set_rgb_color(
-                    self.user_preferences.get_preference("rgb_color"),
-                    bool(self.user_preferences.get_preference("rgb_enabled")),
-                )
+                raw, enabled, explicit = self._resolve_profile_rgb(self._active_profile_name)
+                self.steelseries_api.set_rgb_color(raw, enabled, black_off=explicit)
             except Exception as e:
                 logger.debug("RGB preference update failed: %s", e)
 
@@ -975,6 +1019,19 @@ class DisplayManager:
 
         self._spotify_poll_ms = max(250, int(self.fetch_delay * 1000))
         
+        # Spotify on/off takes effect immediately (it used to be read only at startup,
+        # so disabling it kept polling api.spotify.com until the app restarted).
+        spotify_enabled = bool(self.user_preferences.get_preference("spotify_enabled"))
+        if hasattr(self, "spotify_api") and spotify_enabled != bool(getattr(self, "spotify_enabled", False)):
+            self.spotify_enabled = spotify_enabled
+            if spotify_enabled and self.spotify_api is None:
+                logger.info("Spotify integration enabled, starting authorization...")
+                self.spotify_api = SpotifyAPI(self.user_preferences)
+                Thread(target=self.spotify_api.fetch_token, args=(True,), daemon=True).start()
+            elif not spotify_enabled and self.spotify_api is not None:
+                logger.info("Spotify integration disabled")
+                self.spotify_api = None
+
         # Reload Spotify credentials if they changed (only if Spotify is enabled)
         if hasattr(self, "spotify_api") and self.spotify_api:
             changed = self.spotify_api.reload_config()
@@ -1039,6 +1096,93 @@ class DisplayManager:
                 self._last_lighting_failed_ts = now
                 logger.debug(f"Failed to set lighting state: {e}")
 
+    def _system_stats_active(self, game_active: bool) -> bool:
+        """System Stats display rule.
+
+        - "Auto-switch to System Stats in Games" on: stats only while a game is
+          running (also when "Always Show System Stats" is on); otherwise the
+          clock / weather / empty screen, whichever is enabled.
+        - Auto-switch off: "Always Show System Stats" shows them all the time.
+        """
+        if self.hardware_monitor.auto_switch_game:
+            return bool(game_active)
+        return bool(self.display_hw_monitor)
+
+    def _tray_menu_snapshot(self):
+        """Values shown as checkmarks in the tray menu (see Systray.run_systray_async)."""
+        prefs = self.user_preferences
+        return (
+            bool(self.display_clock), bool(self.display_player), bool(self.display_hw_monitor),
+            prefs.get_preference("clock_style"), prefs.get_preference("player_style"),
+            bool(prefs.get_preference("show_game_fps")), bool(prefs.get_preference("debug_enabled")),
+        )
+
+    def _draw_fps_face(self, draw, x_left, x_right):
+        """Centre of the in-game FPS view: the FPS value styled like the clock."""
+        fps_monitor = self.hardware_monitor.fps_monitor
+        fps = self.hardware_monitor.get_effective_fps()
+        reason = getattr(fps_monitor, "unavailable_reason", None)
+        value = str(int(fps)) if fps > 0 else "--"
+        if fps > 0:
+            caption = "FPS"
+        elif reason == "admin":
+            caption = "NO ADMIN"
+        elif reason:
+            caption = "FPS N/A"
+        else:
+            caption = "FPS"
+        self.timer.draw_value_face(draw, x_left, x_right, value, caption)
+
+    def _profile_colors_active(self) -> bool:
+        """True when per-profile colours are enabled and at least one is configured."""
+        if not bool(self.user_preferences.get_preference("profile_lighting_enabled", True)):
+            return False
+        return bool(self.user_preferences.get_preference("profile_colors") or {})
+
+    def _resolve_profile_rgb(self, profile_name):
+        """Return (raw_color, enabled, explicit) for a profile.
+
+        explicit=True when the colour comes from profile_colors: an explicit black
+        then turns the backlight off instead of handing lighting back to GG.
+        Falls back to the global rgb_color / rgb_enabled preference.
+        """
+        if profile_name and bool(self.user_preferences.get_preference("profile_lighting_enabled", True)):
+            profile_colors = self.user_preferences.get_preference("profile_colors") or {}
+            if isinstance(profile_colors, dict) and profile_colors.get(profile_name) is not None:
+                return profile_colors[profile_name], True, True
+        return (
+            self.user_preferences.get_preference("rgb_color"),
+            bool(self.user_preferences.get_preference("rgb_enabled", False)),
+            False,
+        )
+
+    def _apply_profile_color(self, profile_name: str):
+        """
+        Apply the target profile's RGB colour on a profile switch, but never emit a
+        GameSense LIGHTING event when the colour set is unchanged — this prevents
+        the backlight from blinking on every profile switch when profiles share the
+        same colours.
+
+        Colour dedup is delegated to SteelSeriesAPI.set_rgb_color(), which compares
+        against the currently applied colour and only sends a LIGHTING event on a
+        real transition (never from the render loop), per AGENTS.md.
+
+        While AFK the colour is only stored by SteelSeriesAPI (blackout is kept and
+        the colour is applied on wake). SteelSeriesAPI applies all lighting on one
+        worker thread where the newest state wins, so a switch racing AFK entry
+        cannot relight, and the call never blocks on HTTP.
+        A release to GG defers its native-config redeploy until GG has finished
+        deploying the new profile (redeploy=False).
+        """
+        self._active_profile_name = profile_name
+        if not bool(self.user_preferences.get_preference("profile_lighting_enabled", True)):
+            return
+        raw, enabled, explicit = self._resolve_profile_rgb(profile_name)
+        try:
+            self.steelseries_api.set_rgb_color(raw, enabled=enabled, black_off=explicit, redeploy=False)
+        except Exception as e:
+            logger.debug("Profile colour apply failed for '%s': %s", profile_name, e)
+
     # _parse_key removed — replaced by _key_str_to_vk and _reload_hotkey_vks above
 
     def init(self):
@@ -1078,6 +1222,9 @@ class DisplayManager:
             
             if not gg_running:
                  self._gg_was_running = False
+                 # GG is absent, not hung: keep the silence timer fresh, otherwise the
+                 # 180 s auto-recovery killed GG right after it was started again.
+                 self.steelseries_api._last_success_time = time()
                  logger.debug(f"GG not running. auto_launch_gg={self.auto_launch_gg}")
                  
                  # Auto-launch logic
@@ -1106,6 +1253,9 @@ class DisplayManager:
             # If it was NOT running and NOW it is, trigger a reset
             if not self._gg_was_running:
                 logger.info("SteelSeries GG detected! Reconnecting...")
+                # Grace period for a GG that is still starting (its HTTP API comes up
+                # after the process appears).
+                self.steelseries_api._last_success_time = time()
                 self.steelseries_api.reset()
                 self._gg_was_running = True
                 self._last_lighting_state = None
@@ -1133,7 +1283,7 @@ class DisplayManager:
             if self._last_lighting_state != (0 if self._is_afk else 1):
                 self._sync_lighting_state()
 
-            # 1) YT poll (hızlı)
+            # 1) YT poll (fast)
             self.volume_overlay.update()
 
             # Media poll: fetch both sources (extension has priority over SMTC)
@@ -1245,9 +1395,9 @@ class DisplayManager:
                 or (self._yt_paused and yt_since_play <= pause_grace_ms)
             )
 
-            if spotify_playing_active:
+            if self.display_player and spotify_playing_active:
                 self.state = State.SHOW_PLAYER
-            elif yt_playing_active:
+            elif self.display_player and yt_playing_active:
                 self.state = State.SHOW_PLAYER
             else:
                 self.state = State.SHOW_CLOCK
@@ -1333,6 +1483,11 @@ class DisplayManager:
                                 decoupled=gamepad_or_external_active,
                             )
 
+                            if not wake_reason_str and cur_pos != (0, 0) and self._afk_baseline_cursor_pos is None:
+                                # Baseline was unavailable at settle time (e.g. locked
+                                # workstation): latch it now so mouse movement can wake.
+                                self._afk_baseline_cursor_pos = cur_pos
+
                             if wake_reason_str:
                                 # If baseline cursor wasn't available at settle time, latch it now
                                 if cur_pos != (0, 0) and self._afk_baseline_cursor_pos is None:
@@ -1368,6 +1523,7 @@ class DisplayManager:
 
             frame_data = None
             is_profile_active = False
+            game_active = self.hardware_monitor.is_fullscreen_game_active()
 
             self._check_keyboard_lock_keys()
 
@@ -1399,8 +1555,8 @@ class DisplayManager:
             ):
                 img = self.lock_keys_overlay.get_image()
                 frame_data = convert_to_bitmap(img)
-            # Hardware monitor overlay
-            elif self.display_hw_monitor or self.hardware_monitor.should_display() or self.hardware_monitor.is_game_running():
+            # Hardware monitor: Insert peek, or the System Stats display rule
+            elif self.hardware_monitor.should_display() or self._system_stats_active(game_active):
                 img = self.hardware_monitor.get_image()
                 frame_data = convert_to_bitmap(img)
             # Weather hotkey overlay
@@ -1408,9 +1564,30 @@ class DisplayManager:
                 img = self.weather.get_image()
                 frame_data = convert_to_bitmap(img)
             else:
-                if self.state == State.SHOW_CLOCK and self.display_clock:
+                if game_active and self.hardware_monitor.show_fps and self.hardware_monitor.is_game_rendering():
+                    # While a game is running the FPS view wins over the clock face and the
+                    # music player; battery, lock-key badges, mute icons and the weather
+                    # widget stay. is_game_rendering() requires sustained frames, so a
+                    # maximised document or a fullscreen slideshow does not count as a game.
+                    frame_data = convert_to_bitmap(
+                        self.timer.get_layout_image(self._draw_fps_face, weather_widget=True)
+                    )
+                elif self.state == State.SHOW_CLOCK and self.display_clock:
                     img = self.timer.get_image()
                     frame_data = convert_to_bitmap(img)
+                elif self.state == State.SHOW_CLOCK:
+                    # Clock disabled: show centred weather when enabled, otherwise a blank
+                    # screen. Never leave frame_data as None here, or the OLED freezes on
+                    # the last frame (e.g. after a song or overlay ends).
+                    # Same widgets as the clock (battery, lock-key badges, mute icons);
+                    # only the clock face is replaced by the weather (or left empty).
+                    center = (
+                        self.weather.draw_centered
+                        if hasattr(self, "weather") and self.weather.enabled else None
+                    )
+                    frame_data = convert_to_bitmap(
+                        self.timer.get_layout_image(center, weather_widget=False)
+                    )
                 elif self.state == State.SHOW_PLAYER and self.display_player:
                     # Use lock with timeout to prevent deadlock hangs
                     if self._lock.acquire(timeout=0.1):
@@ -1424,7 +1601,7 @@ class DisplayManager:
                     if img:
                         frame_data = convert_to_bitmap(img)
 
-                    # paused threshold (Yedek kontrol, yukarıdaki mantık bunu zaten çözüyor ama kalsın)
+                    # paused threshold (backup check; the logic above already handles this, kept as a safety net)
                     if self.player.pause_started and (int(time() * 1000) - self.player.pause_started) > self.timer_threshold:
                         self.state = State.SHOW_CLOCK
 
@@ -1436,14 +1613,19 @@ class DisplayManager:
                 resend_interval = 2.0 if self._is_afk else 1.0
                 force_resend = (now_sec - self._last_frame_sent_time > resend_interval) or is_profile_active
                 if (frame_data != self._last_sent_frame) or force_resend:
+                    sent_ok = False
                     try:
-                        if self.steelseries_api.send_frame(frame_data):
-                            self._last_sent_frame = frame_data
-                            self._last_frame_sent_time = now_sec
-                            self._frame_fail_start = 0  # Reset failure timer on success
+                        sent_ok = bool(self.steelseries_api.send_frame(frame_data))
                     except Exception as e:
                         logger.debug("Frame send failed: %s", e)
-                        # Track prolonged failure — if frames fail for 30s+, force re-register
+                    if sent_ok:
+                        self._last_sent_frame = frame_data
+                        self._last_frame_sent_time = now_sec
+                        self._frame_fail_start = 0  # Reset failure timer on success
+                    else:
+                        # send_frame() reports failures by returning False (it rarely
+                        # raises), e.g. when re-registration left no API address.
+                        # Track prolonged failure — if frames fail for 30s+, force re-register.
                         if self._frame_fail_start == 0:
                             self._frame_fail_start = now_sec
                         elif (now_sec - self._frame_fail_start) > 30.0:
@@ -1451,8 +1633,8 @@ class DisplayManager:
                             self._frame_fail_start = 0
                             try:
                                 self.steelseries_api.reset()
-                            except Exception as re:
-                                logger.error("Re-registration failed: %s", re)
+                            except Exception as reset_err:
+                                logger.error("Re-registration failed: %s", reset_err)
 
             # Heartbeat: keep the game(s) registered (every 25s)
             if now_sec - self._last_heartbeat_time > 25.0:
@@ -1510,7 +1692,7 @@ class DisplayManager:
             if not self._spotify_paused:
                 self._spotify_last_playing_ms = now_ms
 
-            # Spotify paused ise ve YT aktif çalıyorsa overwrite etme
+            # Do not overwrite while Spotify is paused and YouTube is actively playing
             yt_active = (not self._yt_paused) and \
                         ((now_ms - self._yt_last_playing_ms) <= self._yt_hold_playing_ms)
             
@@ -1531,9 +1713,9 @@ class DisplayManager:
     @staticmethod
     def _apply_to_player(player, data, now_ms: int, source="spotify"):
         """
-        Scroll resetlenmesin diye:
-        - title/artist değiştiyse update_song
-        - aynıysa sadece seek_song (progress güncelle)
+        To avoid resetting the scroll position:
+        - title/artist changed: update_song
+        - same track: only seek_song (update progress)
         """
         try:
             title = (data.get("title") or "").strip()
@@ -1659,12 +1841,13 @@ class DisplayManager:
         # so the 60s deinitialize timer never resets Rival 5 to orange after exit.
         if hasattr(self, "steelseries_api") and self.steelseries_api:
             try:
-                self.steelseries_api.remove_game()
+                # Undo the now-playing.exe suspension first: remove_game() does network
+                # I/O and the tray's exit watchdog may os._exit before it finishes.
+                self.steelseries_api.resume_conflicting_apps()
             except Exception:
                 pass
             try:
-                # Undo the now-playing.exe suspension applied at registration.
-                self.steelseries_api.resume_conflicting_apps()
+                self.steelseries_api.remove_game()
             except Exception:
                 pass
 
@@ -2235,11 +2418,23 @@ class DisplayManager:
         apex_cfg_slots = {}        # cfg_id -> onboard_profile_slot (0..4 for onboard, -1 for preconfigs)
         last_loadouts_cache_ts = 0.0
         last_loadout_trigger_ts = 0.0
+        desktop_cfg_ids = set()    # configs of the Desktop loadout (for colour lookups)
+        desktop_loadout_name = "Desktop"
         initial_sync = True
+
+        def colour_name(cfg_id, cfg_name):
+            # Desktop-loadout configs are deliberately not in cfg_to_loadout (shared
+            # configs), but their colour is stored under the Desktop loadout name.
+            return cfg_to_loadout.get(cfg_id) or (
+                desktop_loadout_name if cfg_id in desktop_cfg_ids else cfg_name
+            )
 
         while self._running:
             try:
-                if not self.user_preferences.get_preference("show_profile_switch_overlay"):
+                # The overlay and per-profile colours both need switch detection; the
+                # colours must keep working when the overlay is turned off.
+                overlay_enabled = bool(self.user_preferences.get_preference("show_profile_switch_overlay"))
+                if not overlay_enabled and not self._profile_colors_active():
                     sleep(1.0)
                     continue
 
@@ -2282,6 +2477,7 @@ class DisplayManager:
                                 desktop_cfg_ids = set()
                                 for l in loadouts_list:
                                     if isinstance(l, dict) and (l.get("name") or "").lower() == "desktop":
+                                        desktop_loadout_name = l.get("name") or "Desktop"
                                         for c in l.get("configs", []):
                                             if c.get("config_id"):
                                                 desktop_cfg_ids.add(c.get("config_id"))
@@ -2310,6 +2506,8 @@ class DisplayManager:
                             if initial_sync:
                                 last_loadout_id = lid
                                 last_loadout_name = lname
+                                # Apply the colour of the loadout already active at startup
+                                self._apply_profile_color(lname)
                             elif lname != last_loadout_name or (lid and lid != last_loadout_id):
                                 logger.info(f"[PROFILE-MONITOR] Active loadout switched: '{last_loadout_name}' -> '{lname}'")
                                 last_loadout_id = lid
@@ -2343,7 +2541,8 @@ class DisplayManager:
                                 slot = apex_cfg_slots.get(apex_cid, -1) if apex_cid else -1
                                 if slot is not None and slot >= 0:
                                     logger.info(f"[PROFILE-MONITOR] Loadout '{lname}' is an onboard slot ({slot}) -> skipping overlay (hardware OSD handles it)")
-                                else:
+                                    self._apply_profile_color(lname)
+                                elif overlay_enabled:
                                     logger.info(f"[PROFILE-MONITOR] Loadout '{lname}' is a software preconfig -> triggering native overlay")
                                     self.profile_overlay.trigger(raw_device_name="profile", raw_profile_name=lname, slot=None)
                                     # Instantly push first frame to preempt GG default background
@@ -2356,6 +2555,10 @@ class DisplayManager:
                                             self._last_frame_sent_time = now
                                     except Exception as e:
                                         logger.debug(f"[PROFILE-MONITOR] Instant frame dispatch error: {e}")
+                                    # Applied after the instant frame (colour is queued, not blocking)
+                                    self._apply_profile_color(lname)
+                                else:
+                                    self._apply_profile_color(lname)
                 except Exception as e:
                     logger.debug(f"[PROFILE-MONITOR] Active loadout poll error: {e}")
 
@@ -2402,9 +2605,13 @@ class DisplayManager:
 
                                     if slot is not None and slot >= 0:
                                         logger.debug(f"[PROFILE-MONITOR] Device {dname} switch to onboard slot {slot} ('{cfg_name}') skipped (hardware OSD handles it)")
+                                        self._apply_profile_color(colour_name(cfg_id, cfg_name))
                                         continue
 
                                     display_name = cfg_to_loadout.get(cfg_id) or cfg_name
+                                    if not overlay_enabled:
+                                        self._apply_profile_color(colour_name(cfg_id, cfg_name))
+                                        continue
                                     logger.info(f"[PROFILE-MONITOR] Device {dname} preconfig changed to '{display_name}'")
                                     self.profile_overlay.trigger(raw_device_name=dname, raw_profile_name=display_name, slot=None)
                                     try:
@@ -2416,13 +2623,16 @@ class DisplayManager:
                                             self._last_frame_sent_time = now
                                     except Exception:
                                         pass
+                                    self._apply_profile_color(colour_name(cfg_id, cfg_name))
                 except Exception as e:
                     logger.debug(f"[PROFILE-MONITOR] Connected devices poll error: {e}")
 
                 if initial_sync:
                     initial_sync = False
 
-                sleep(0.08)  # 80ms fast poll for near-instant detection
+                # 350 ms poll (was 80 ms) to avoid hammering GG's local server during loadout
+                # deploys; 1 s when only per-profile colours need the switch detection.
+                sleep(0.35 if overlay_enabled else 1.0)
 
             except Exception as e:
                 logger.debug(f"[PROFILE-MONITOR] Loop exception: {e}")

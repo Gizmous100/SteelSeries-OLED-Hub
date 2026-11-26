@@ -74,26 +74,45 @@ def exit_app(icon):
     os._exit(0)
 
 
+def _refresh_menu(icon):
+    """Rebuild the tray menu from the tray thread and remember the state it shows,
+    so DisplayManager.update_preferences() (hot reload, other threads) does not
+    rebuild it again while the user may have it open."""
+    manager = getattr(icon, "manager", None)
+    if manager is not None and hasattr(manager, "_tray_menu_snapshot"):
+        try:
+            manager._tray_menu_state = manager._tray_menu_snapshot()
+        except Exception:
+            pass
+    icon.update_menu()
+
+
 def toggle_enabled(icon):
     icon.manager.enabled = not icon.manager.enabled
-    icon.update_menu()
+    _refresh_menu(icon)
+
+
+def _auto_switch_enabled(icon) -> bool:
+    return bool(icon.manager.user_preferences.preferences.get("auto_hw_monitor_game"))
 
 
 def toggle_clock(icon):
     if not icon.manager.user_preferences.valid:
         return
 
-    # Exclusive logic: if enabling clock, disable hw monitor
+    # Clock and Always Show System Stats exclude each other unless Auto-switch is on
+    # (then the stats cover games and the clock everything else).
     was_on = icon.manager.display_clock
     if not was_on:
-        icon.manager.display_hw_monitor = False
-        icon.manager.user_preferences.preferences["display_hw_monitor"] = False
+        if not _auto_switch_enabled(icon):
+            icon.manager.display_hw_monitor = False
+            icon.manager.user_preferences.preferences["display_hw_monitor"] = False
         icon.manager._calculator_active = False  # Also disable calculator
     
     icon.manager.display_clock = not was_on
     icon.manager.user_preferences.preferences["display_timer"] = icon.manager.display_clock
     icon.manager.user_preferences.save_preferences()
-    icon.update_menu()
+    _refresh_menu(icon)
 
 
 def toggle_player(icon):
@@ -103,7 +122,7 @@ def toggle_player(icon):
     icon.manager.display_player = not icon.manager.display_player
     icon.manager.user_preferences.preferences["display_player"] = icon.manager.display_player
     icon.manager.user_preferences.save_preferences()
-    icon.update_menu()
+    _refresh_menu(icon)
 
 
 def open_config(icon):
@@ -118,11 +137,12 @@ def toggle_hw_monitor(icon):
     if not icon.manager.user_preferences.valid:
         return
 
-    # Exclusive logic: if enabling hw monitor, disable clock
+    # Enabling Always Show System Stats turns the clock off unless Auto-switch is on
     was_on = icon.manager.display_hw_monitor
     if not was_on:
-        icon.manager.display_clock = False
-        icon.manager.user_preferences.preferences["display_timer"] = False
+        if not _auto_switch_enabled(icon):
+            icon.manager.display_clock = False
+            icon.manager.user_preferences.preferences["display_timer"] = False
         icon.manager._calculator_active = False  # Also disable calculator
     elif not icon.manager._calculator_active:
         # Turning the monitor off restores the clock; otherwise the OLED stayed
@@ -134,29 +154,21 @@ def toggle_hw_monitor(icon):
     icon.manager.user_preferences.preferences["display_hw_monitor"] = icon.manager.display_hw_monitor
     icon.manager.user_preferences.save_preferences()
     icon.manager.update_preferences()
-    icon.update_menu()
+    _refresh_menu(icon)
 
 def toggle_calculator(icon):
     if not icon.manager.user_preferences.valid:
         return
 
-    # Exclusive logic: if enabling calculator, disable clock + hw monitor
+    # The calculator already takes priority over the clock and System Stats in the
+    # render loop, so the clock / stats settings are left untouched. Saving them as
+    # off here left the clock disabled for good when the calculator was closed with
+    # Esc or the keyboard shortcut (only this tray toggle restored it).
     activating = not icon.manager._calculator_active
     if activating:
-        icon.manager.display_clock = False
-        icon.manager.user_preferences.preferences["display_timer"] = False
-        icon.manager.display_hw_monitor = False
-        icon.manager.user_preferences.preferences["display_hw_monitor"] = False
         icon.manager.calculator.clear()
-    else:
-        # Returning from the calculator restores the clock instead of leaving
-        # the OLED on the last calculator frame.
-        icon.manager.display_clock = True
-        icon.manager.user_preferences.preferences["display_timer"] = True
-
     icon.manager._calculator_active = activating
-    icon.manager.user_preferences.save_preferences()
-    icon.update_menu()
+    _refresh_menu(icon)
 
 def toggle_fps(icon):
     if not icon.manager.user_preferences.valid:
@@ -165,7 +177,7 @@ def toggle_fps(icon):
     icon.manager.user_preferences.preferences["show_game_fps"] = not current
     icon.manager.user_preferences.save_preferences()
     icon.manager.update_preferences()
-    icon.update_menu()
+    _refresh_menu(icon)
 
 
 
@@ -176,7 +188,7 @@ def set_clock_style(icon, style):
     icon.manager.user_preferences.preferences["clock_style"] = style
     icon.manager.user_preferences.save_preferences()
     icon.manager.update_preferences()
-    icon.update_menu()
+    _refresh_menu(icon)
 
 def set_player_style(icon, style):
     if not icon.manager.user_preferences.valid:
@@ -185,7 +197,7 @@ def set_player_style(icon, style):
     icon.manager.user_preferences.preferences["player_style"] = style
     icon.manager.user_preferences.save_preferences()
     icon.manager.update_preferences()
-    icon.update_menu()
+    _refresh_menu(icon)
 
 
 def open_install_folder(icon):
@@ -244,7 +256,7 @@ def toggle_debug(icon):
         icon.manager.user_preferences.preferences["debug_enabled"] = enable
         icon.manager.user_preferences.save_preferences()
     
-    icon.update_menu()
+    _refresh_menu(icon)
 
 def get_update_label(item):
     if not hasattr(get_update_label, "_cached_label"):
@@ -567,12 +579,13 @@ def run_systray_async(display_manager):
         with Image.open(icon_path) as img:
             icon_image = img.copy()
     except Exception:
-        # icon.png yoksa basit 16x16 siyah kare kullan
+        # No icon.png: fall back to a plain 16x16 black square
         icon_image = Image.new("1", (16, 16), 0)
 
     from version import __version__
     icon = Icon("SteelSeries_OLED_Hub", icon_image, f"SteelSeries OLED & RGB Hub v{__version__} (by gizmous)", menu)
     icon.manager = display_manager
+    display_manager.tray_icon = icon
 
     logger.info("Enabled systray")
     systray_thread = Thread(target=icon.run, daemon=True)

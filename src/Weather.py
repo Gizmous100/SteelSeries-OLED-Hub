@@ -67,7 +67,11 @@ class WeatherModule:
         self.config = config
         self.preferences = preferences
         
+        # self.city is the user's query (compared on preference reloads); the geocoded
+        # name (e.g. "Warszawa" for "Warsaw") is kept separately for display, otherwise
+        # every reload looked like a city change and refetched everything.
         self.city = self.preferences.get_preference("weather_city") or "Warsaw"
+        self.city_display = ""
         self.aqi_region = self.preferences.get_preference("weather_aqi_region") or "EU"
         if self.aqi_region not in self.SUPPORTED_AQI_REGIONS:
             self.aqi_region = "EU"
@@ -90,6 +94,7 @@ class WeatherModule:
         self._last_aqi_raw = None
         self.last_update = 0
         self.update_interval = 1800  # 30 mins
+        self.retry_interval = 60     # after a failed fetch (e.g. network not up yet at logon)
         
         self.font = self._load_font("fonts/VerdanaBold.ttf", 14)
         self.small_font = self._load_font("fonts/MunroSmall.ttf", 10)
@@ -130,6 +135,7 @@ class WeatherModule:
 
         if city_changed:
             self.city = new_city
+            self.city_display = ""
             self.lat = None
             self.lon = None
             self.country_code = ""
@@ -311,6 +317,10 @@ class WeatherModule:
 
         self.aqi = eu_val
 
+    def _schedule_retry(self, delay):
+        """Make update() try again after `delay` seconds instead of update_interval."""
+        self.last_update = time() - self.update_interval + delay
+
     def _fetch_data(self):
         try:
             if self.lat is None or self.lon is None:
@@ -324,11 +334,12 @@ class WeatherModule:
                         res = data["results"][0]
                         self.lat = res["latitude"]
                         self.lon = res["longitude"]
-                        self.city = res["name"]
+                        self.city_display = res.get("name") or self.city
                         self.country_code = (res.get("country_code") or "").upper()
                         self.timezone = res.get("timezone") or ""
                     else:
                         logger.error(f"Weather: City {self.city} not found.")
+                        self._schedule_retry(600)
                         return
 
             # Fetch weather
@@ -357,7 +368,9 @@ class WeatherModule:
                 self.aqi = None
                 
         except Exception as e:
-            logger.error(f"Weather fetch failed: {e}")
+            # Retry soon instead of showing "Loading..." for the whole 30 min interval
+            logger.error(f"Weather fetch failed: {e} (retrying in {self.retry_interval}s)")
+            self._schedule_retry(self.retry_interval)
 
     def get_weather_data(self):
         if not self.enabled:
@@ -393,7 +406,7 @@ class WeatherModule:
 
         if self.temperature is not None:
             # Left side: City (normalized for ASCII pixel font) and description
-            city_display = normalize_text(self.city)[:15].upper()
+            city_display = normalize_text(self.city_display or self.city)[:15].upper()
             draw.text((2, 2), city_display, font=self.small_font, fill=1)
             desc = self.get_weather_desc(self.weathercode)
             draw.text((2, 25), desc, font=self.small_font, fill=1)
@@ -405,27 +418,8 @@ class WeatherModule:
             draw.text((126 - w, 12), temp_text, font=self.font, fill=1)
             
             # Middle: Icon
-            icon_x, icon_y = 64, 18
-            if self.weathercode == 0:
-                draw.ellipse((icon_x-5, icon_y-5, icon_x+5, icon_y+5), outline=1)
-                draw.line((icon_x-8, icon_y, icon_x+8, icon_y), fill=1)
-                draw.line((icon_x, icon_y-8, icon_x, icon_y+8), fill=1)
-            elif self.weathercode in [1, 2, 3]:
-                draw.ellipse((icon_x-8, icon_y-2, icon_x, icon_y+6), outline=1)
-                draw.ellipse((icon_x-2, icon_y-6, icon_x+8, icon_y+4), outline=1)
-                draw.ellipse((icon_x+2, icon_y-2, icon_x+10, icon_y+6), outline=1)
-            elif self.weathercode in [61, 63, 65, 80, 81, 82]:
-                draw.ellipse((icon_x-8, icon_y-8, icon_x+8, icon_y), outline=1)
-                draw.line((icon_x-4, icon_y+2, icon_x-6, icon_y+8), fill=1)
-                draw.line((icon_x, icon_y+2, icon_x-2, icon_y+8), fill=1)
-                draw.line((icon_x+4, icon_y+2, icon_x+2, icon_y+8), fill=1)
-            elif self.weathercode in [71, 73, 75, 85, 86]:
-                draw.text((icon_x-4, icon_y-8), "*", font=self.font, fill=1)
-            elif self.weathercode in [95, 96, 99]:
-                draw.polygon([(icon_x, icon_y-8), (icon_x-4, icon_y+2), (icon_x+2, icon_y), (icon_x-2, icon_y+8)], fill=1)
-            else:
-                draw.ellipse((icon_x-5, icon_y-5, icon_x+5, icon_y+5), outline=1)
-                
+            self._draw_icon(draw, 64, 18)
+
             if self.aqi is not None:
                 aqi_text = f"{self.effective_aqi_region} AQI: {int(round(self.aqi))}"
                 bbox_aqi = draw.textbbox((0, 0), aqi_text, font=self.small_font)
@@ -437,4 +431,69 @@ class WeatherModule:
 
         return img
 
+    def _draw_icon(self, draw, icon_x, icon_y):
+        """Draw the weather-code icon centred at (icon_x, icon_y); spans about +/-10 px."""
+        if self.weathercode == 0:
+            draw.ellipse((icon_x-5, icon_y-5, icon_x+5, icon_y+5), outline=1)
+            draw.line((icon_x-8, icon_y, icon_x+8, icon_y), fill=1)
+            draw.line((icon_x, icon_y-8, icon_x, icon_y+8), fill=1)
+        elif self.weathercode in [1, 2, 3]:
+            draw.ellipse((icon_x-8, icon_y-2, icon_x, icon_y+6), outline=1)
+            draw.ellipse((icon_x-2, icon_y-6, icon_x+8, icon_y+4), outline=1)
+            draw.ellipse((icon_x+2, icon_y-2, icon_x+10, icon_y+6), outline=1)
+        elif self.weathercode in [61, 63, 65, 80, 81, 82]:
+            draw.ellipse((icon_x-8, icon_y-8, icon_x+8, icon_y), outline=1)
+            draw.line((icon_x-4, icon_y+2, icon_x-6, icon_y+8), fill=1)
+            draw.line((icon_x, icon_y+2, icon_x-2, icon_y+8), fill=1)
+            draw.line((icon_x+4, icon_y+2, icon_x+2, icon_y+8), fill=1)
+        elif self.weathercode in [71, 73, 75, 85, 86]:
+            draw.text((icon_x-4, icon_y-8), "*", font=self.font, fill=1)
+        elif self.weathercode in [95, 96, 99]:
+            draw.polygon([(icon_x, icon_y-8), (icon_x-4, icon_y+2), (icon_x+2, icon_y), (icon_x-2, icon_y+8)], fill=1)
+        else:
+            draw.ellipse((icon_x-5, icon_y-5, icon_x+5, icon_y+5), outline=1)
 
+    def draw_centered(self, draw, x0, x1):
+        """Draw the weather in place of the clock face, centred between x0 and x1.
+
+        Used when the clock is disabled; the surrounding widgets (battery,
+        lock-key badges, mute icons) are laid out by Timer exactly as on the clock.
+        Row 1 (y ~4..21): icon + temperature. Row 2 (y ~24..30): description / AQI.
+        The bottom rows (y >= 34) stay free for the lock-key badges.
+        """
+        self.update()
+        avail = max(1, x1 - x0)
+
+        def centred_text(text, font, top):
+            bbox = draw.textbbox((0, 0), text, font=font)
+            w = bbox[2] - bbox[0]
+            draw.text((x0 + (avail - w) // 2 - bbox[0], top - bbox[1]), text, font=font, fill=1)
+            return w
+
+        if self.temperature is None:
+            tr = self.WEATHER_TRANSLATIONS.get(self.language, self.WEATHER_TRANSLATIONS["EN"])
+            centred_text(tr["loading"], self.small_font, 14)
+            return
+
+        temp_text = f"{int(round(self.temperature))}°C"
+        bbox = draw.textbbox((0, 0), temp_text, font=self.font)
+        temp_w, temp_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        icon_w, gap = 20, 4
+        total_w = icon_w + gap + temp_w
+        left = x0 + (avail - total_w) // 2
+        row_cy = 12
+        self._draw_icon(draw, left + icon_w // 2, row_cy)
+        draw.text((left + icon_w + gap - bbox[0], row_cy - temp_h // 2 - bbox[1]), temp_text, font=self.font, fill=1)
+
+        # Second row: description + AQI, falling back to shorter text in narrow layouts
+        desc = self.get_weather_desc(self.weathercode)
+        candidates = []
+        if self.aqi is not None:
+            aqi_text = f"AQI {int(round(self.aqi))}"
+            candidates += [f"{desc}  {aqi_text}", aqi_text]
+        candidates.append(desc)
+        for text in candidates:
+            bbox_i = draw.textbbox((0, 0), text, font=self.small_font)
+            if bbox_i[2] - bbox_i[0] <= avail:
+                centred_text(text, self.small_font, 24)
+                break

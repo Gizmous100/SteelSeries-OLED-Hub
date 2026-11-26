@@ -1,17 +1,29 @@
 import logging
-import pythoncom
 import os
 import gc
 from time import time
 
 from PIL import Image, ImageDraw
-from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume, IMMDeviceEnumerator, EDataFlow, ERole
-from comtypes import CLSCTX_ALL
 from ctypes import POINTER, cast
 
 from src.image_utils import fetch_content_path
 
 logger = logging.getLogger("OLED Customizer.VolumeOverlay")
+
+# Native COM bindings are optional: without pywin32 / pycaw / comtypes the volume
+# overlay and mic sync are disabled instead of preventing the app from starting.
+try:
+    import pythoncom
+except ImportError as _e:
+    pythoncom = None
+    logger.warning("pywin32 (pythoncom) unavailable: %s", _e)
+try:
+    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume, IMMDeviceEnumerator, EDataFlow, ERole
+    from comtypes import CLSCTX_ALL
+except Exception as _e:  # ImportError, or OSError from a broken COM registration
+    AudioUtilities = IAudioEndpointVolume = IMMDeviceEnumerator = EDataFlow = ERole = None
+    CLSCTX_ALL = None
+    logger.warning("pycaw/comtypes unavailable, volume overlay disabled: %s", _e)
 
 class VolumeOverlay:
     def __init__(self, config, timeout=1.5):
@@ -393,6 +405,17 @@ class VolumeOverlay:
         self._check_discord()
         changed = False
         
+        # Retry the speaker interface when it was unavailable (e.g. the audio endpoint
+        # was not ready at logon); update() only re-initialised it after a failure.
+        if self._volume is None and AudioUtilities is not None and time() >= getattr(self, "_next_speaker_retry", 0.0):
+            self._next_speaker_retry = time() + 5.0
+            try:
+                device = AudioUtilities.GetSpeakers()
+                self._volume = device.EndpointVolume.QueryInterface(IAudioEndpointVolume)
+                logger.info("Speaker interface initialised")
+            except Exception:
+                self._volume = None
+
         # Check Speaker
         if self._volume:
             try:
@@ -477,10 +500,13 @@ class VolumeOverlay:
 
         # 1. Speaker Icon
         icon_key = "speaker_mute"
+        # _last_vol stays None while no speaker interface exists (the overlay can
+        # still be shown for a mic / Discord change): `None < 33` raised TypeError.
+        vol = self._last_vol if self._last_vol is not None else 0
         if not self._last_mute and not is_deafened:
-            if self._last_vol == 0: icon_key = "speaker_mute"
-            elif self._last_vol < 33: icon_key = "speaker_low"
-            elif self._last_vol < 66: icon_key = "speaker_mid"
+            if vol == 0: icon_key = "speaker_mute"
+            elif vol < 33: icon_key = "speaker_low"
+            elif vol < 66: icon_key = "speaker_mid"
             else: icon_key = "speaker_high"
         else:
              icon_key = "speaker_mute"

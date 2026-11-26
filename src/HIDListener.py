@@ -8,7 +8,11 @@ logger = logging.getLogger("OLED Customizer.HIDListener")
 
 # Define Win32 API signatures for 64-bit compatibility
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-hid = ctypes.WinDLL("hid", use_last_error=True)
+try:
+    hid = ctypes.WinDLL("hid", use_last_error=True)
+except OSError as _hid_err:  # optional component: headset HID sync is disabled without it
+    hid = None
+    logger.warning("hid.dll unavailable (%s); headset HID sync disabled", _hid_err)
 
 CreateFileW = kernel32.CreateFileW
 CreateFileW.restype = wintypes.HANDLE
@@ -43,9 +47,13 @@ CloseHandle = kernel32.CloseHandle
 CloseHandle.restype = wintypes.BOOL
 CloseHandle.argtypes = [wintypes.HANDLE]
 
-HidD_SetOutputReport = hid.HidD_SetOutputReport
-HidD_SetOutputReport.restype = wintypes.BOOLEAN
-HidD_SetOutputReport.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.ULONG]
+if hid is not None:
+    HidD_SetOutputReport = hid.HidD_SetOutputReport
+    HidD_SetOutputReport.restype = wintypes.BOOLEAN
+    HidD_SetOutputReport.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.ULONG]
+else:
+    def HidD_SetOutputReport(*_args):
+        return False
 
 HID_GUID = "{4d1e55b2-f16f-11cf-88cb-001111000030}"
 GENERIC_READ = 0x80000000
@@ -284,6 +292,9 @@ class HIDListener(threading.Thread):
 
     def start(self):
         if self._running:
+            return
+        if hid is None:
+            logger.warning("Headset HID sync not started: hid.dll is unavailable")
             return
         self._running = True
 
@@ -621,6 +632,10 @@ class HIDListener(threading.Thread):
                 if not self._handle:
                     with self._device_path_lock:
                         dp = self.device_path
+                if not self._handle and not dp:
+                    # Nulled concurrently (device unplugged): rediscover next loop
+                    self._handle = None
+                elif not self._handle:
                     self._handle = CreateFileW(
                         dp,
                         GENERIC_READ,
@@ -642,7 +657,7 @@ class HIDListener(threading.Thread):
                             self._write_reopen = False
                             logger.debug("Headset HID: Reopened after host write (no settle blackout)")
                         else:
-                            is_ss = "VID_1038" in self.device_path.upper()
+                            is_ss = "VID_1038" in (dp or "").upper()
                             model = "SteelSeries Headset" if is_ss else "HyperX Cloud III"
                             logger.info("%s HID: Connected for reading", model)
                             # Initial Sync Settle: ignore the connection flurry
@@ -680,7 +695,8 @@ class HIDListener(threading.Thread):
                         if self._handle:
                             CloseHandle(self._handle)
                             self._handle = None
-                    self.device_path = None
+                    with self._device_path_lock:
+                        self.device_path = None
                     sleep(1)
                     continue
 
@@ -691,7 +707,9 @@ class HIDListener(threading.Thread):
                     # confirm what the headset actually sends.
                     logger.debug("HID RAW: %s", data[:8].hex(" "))
 
-                    if "VID_1038" in self.device_path.upper() and len(data) >= 4:
+                    with self._device_path_lock:
+                        dp_now = self.device_path or ""
+                    if "VID_1038" in dp_now.upper() and len(data) >= 4:
                         if data[0] == 0x00 and data[1] == 0xB0:
                             charging = data[2]
                             pct = data[3]

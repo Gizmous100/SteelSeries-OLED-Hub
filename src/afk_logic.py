@@ -67,14 +67,16 @@ def wake_reason(
     if last_physical_mouse_click_ms > settled_time:
         return "mouse click/wheel"
 
-    if cursor_pos and cursor_pos != (0, 0):
-        if not baseline_cursor_pos or baseline_cursor_pos == (0, 0):
-            return None
+    has_baseline = bool(baseline_cursor_pos) and baseline_cursor_pos != (0, 0)
+    if cursor_pos and cursor_pos != (0, 0) and has_baseline:
         dx = abs(cursor_pos[0] - baseline_cursor_pos[0])
         dy = abs(cursor_pos[1] - baseline_cursor_pos[1])
         if dx >= WAKE_CURSOR_PIXELS or dy >= WAKE_CURSOR_PIXELS:
             return f"mouse movement (dx={dx}, dy={dy})"
         return None
+    # No usable baseline (AFK settled while the workstation was locked, or with the
+    # cursor parked at (0,0)): fall through to the input-tick check below instead of
+    # staying in AFK forever; the caller latches a baseline for later movement.
 
     if (
         not decoupled

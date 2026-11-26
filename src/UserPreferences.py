@@ -51,11 +51,14 @@ class UserPreferences:
         "show_game_fps": False,
         "auto_hw_monitor_game": False,
         "selected_gpu": "Auto",
-        "hotkey_calculator": "Key.insert",
+        # Toggled with Ctrl + this key. Not Insert: Ctrl+Insert is the standard Copy shortcut.
+        "hotkey_calculator": "Key.f12",
         "hotkey_mute_2": "",
         "discord_client_id": "",
         "discord_client_secret": "",
         "discord_access_token": "",
+        "discord_refresh_token": "",
+        "discord_auth_expires": 0,
         "discord_mock_enabled": False,
         "headset_hid_sync_enabled": False,
         "discord_local_port": 8888,
@@ -69,6 +72,8 @@ class UserPreferences:
         "hotkey_weather": "Key.f8",
         "show_profile_switch_overlay": True,
         "profile_switch_display_time": 3.5,
+        "profile_colors": {},
+        "profile_lighting_enabled": True,
         "show_lock_keys_overlay": True,
         "lock_keys_overlay_duration": 1.8,
         "show_lock_keys_clock": True
@@ -148,9 +153,21 @@ class UserPreferences:
                 self.preferences["oled_language"] = "PL"
                 modified = True
 
+            # One-time migration of the old calculator default (Ctrl+Insert collides with
+            # Copy and turned calculator mode on by accident). A user who picks Insert
+            # again afterwards keeps it: the flag prevents migrating twice.
+            if not self.preferences.get("hotkey_calculator_migrated"):
+                if self.preferences.get("hotkey_calculator") == "Key.insert":
+                    self.preferences["hotkey_calculator"] = self.DEFAULT["hotkey_calculator"]
+                    logger.info("Calculator hotkey migrated from Ctrl+Insert to Ctrl+F12")
+                self.preferences["hotkey_calculator_migrated"] = True
+                modified = True
+
             for key, value in self.DEFAULT.items():
                 if key not in self.preferences:
-                    self.preferences[key] = value
+                    # Copy: mutable defaults (profile_colors, rgb_color) must never be
+                    # shared with the class-level DEFAULT dict.
+                    self.preferences[key] = deepcopy(value)
                     modified = True
 
             if modified:
@@ -209,5 +226,10 @@ class UserPreferences:
                     except OSError:
                         pass
 
-    def get_preference(self, key):
-        return self.preferences.get(key)
+    def get_preference(self, key, default=None):
+        """Return the preference for ``key``, or ``default`` if it is missing.
+
+        Backward compatible: callers passing only ``key`` get ``None`` for a
+        missing key, exactly as before.
+        """
+        return self.preferences.get(key, default)

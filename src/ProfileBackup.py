@@ -78,7 +78,32 @@ def _copy_database(src: str, dest: str) -> bool:
         sidecar = src + suffix
         if os.path.exists(sidecar):
             shutil.copy2(sidecar, dest + suffix)
+    _merge_wal_into(dest)
     return True
+
+
+def _merge_wal_into(db_file: str):
+    """Fold a copied -wal sidecar into the database file itself.
+
+    A raw copy keeps committed pages in '<db>-wal'; restore_profiles() copies the
+    .db file, so without this those changes would be lost. Best effort: without
+    sqlite3 the sidecars stay next to the backup and are restored with it.
+    """
+    if sqlite3 is None or not os.path.exists(db_file + "-wal"):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_file, timeout=2.0)
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA journal_mode=DELETE")  # removes the sidecars on close
+    except Exception as e:
+        logger.warning("Could not merge WAL into backup %s: %s", db_file, e)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def get_backup_dir() -> str:
@@ -233,6 +258,10 @@ def restore_profiles(backup_path: str) -> bool:
             tmp_path = db_path + ".restore_tmp"
             shutil.copy2(backup_file, tmp_path)
             os.replace(tmp_path, db_path)
+            # A backup whose WAL could not be merged keeps committed pages in its
+            # -wal sidecar: restore it together with the database file.
+            if os.path.exists(backup_file + "-wal"):
+                shutil.copy2(backup_file + "-wal", db_path + "-wal")
             logger.info(f"Restored {name} database")
             restored += 1
 

@@ -1,7 +1,6 @@
 import requests
 import hashlib
 import os
-import re
 import sys
 import subprocess
 import logging
@@ -10,8 +9,6 @@ from version import __version__
 
 logger = logging.getLogger("OLED Customizer.Updater")
 
-REPO_RAW_URL = "https://raw.githubusercontent.com/Gizmous100/SteelSeries-OLED-Hub/main/version.py"
-RELEASE_EXE_URL = "https://github.com/Gizmous100/SteelSeries-OLED-Hub/releases/latest/download/SteelSeries-OLED-Hub.exe"
 RELEASE_API_URL = "https://api.github.com/repos/Gizmous100/SteelSeries-OLED-Hub/releases/latest"
 ASSET_NAME = "SteelSeries-OLED-Hub.exe"
 
@@ -20,61 +17,67 @@ MIN_EXE_SIZE = 1 * 1024 * 1024
 
 _update_lock = threading.Lock()
 
-def get_latest_version():
-    """Fetches the latest version string from the GitHub repo."""
+
+def _parse_version(text):
+    """'v1.54' / '1.54' -> (1, 54); None when it is not a dotted number."""
     try:
-        response = requests.get(REPO_RAW_URL, timeout=5)
-        if response.status_code == 200:
-            # Parse __version__ = "x.y.z"
-            content = response.text
-            for line in content.splitlines():
-                if '__version__' in line:
-                    m = re.search(r'__version__\s*=\s*"([^"]+)"', line)
-                    if m:
-                        return m.group(1)
+        return tuple(int(part) for part in str(text).strip().lstrip("vV").split("."))
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_newer(candidate, current=__version__) -> bool:
+    cand, cur = _parse_version(candidate), _parse_version(current)
+    if cand is None or cur is None:
+        return False
+    width = max(len(cand), len(cur))
+    return cand + (0,) * (width - len(cand)) > cur + (0,) * (width - len(cur))
+
+
+def _fetch_latest_release():
+    """Version, download URL and SHA-256 of the *same* published release.
+
+    The version used to come from version.py on the main branch while the binary
+    came from releases/latest, so a version bump without a published release made
+    every client reinstall (or downgrade to) the older release in a loop.
+    """
+    try:
+        response = requests.get(RELEASE_API_URL, timeout=5,
+                                headers={"Accept": "application/vnd.github+json"})
+        if response.status_code != 200:
+            logger.warning("Release check failed: HTTP %s", response.status_code)
+            return None
+        data = response.json()
+        version = str(data.get("tag_name") or "").strip().lstrip("vV")
+        for asset in data.get("assets", []):
+            if asset.get("name") == ASSET_NAME:
+                digest = str(asset.get("digest") or "")
+                return {
+                    "version": version,
+                    "url": asset.get("browser_download_url") or "",
+                    "sha256": digest.split(":", 1)[1].lower() if digest.startswith("sha256:") else None,
+                }
+        logger.warning("Latest release %s has no %s asset", version, ASSET_NAME)
     except Exception as e:
-        logger.error(f"Failed to fetch latest version: {e}")
+        logger.error(f"Failed to fetch latest release: {e}")
     return None
+
+
+def get_latest_version():
+    """Version of the latest published release (None when unavailable)."""
+    release = _fetch_latest_release()
+    return release["version"] if release and release.get("version") else None
+
 
 def is_update_available():
     """Returns (True, latest_version) if an update is available, else (False, latest_version)."""
     latest = get_latest_version()
     if not latest:
         return False, None
-    
-    # Simple version comparison (e.g. "1.2.16" vs "1.2.17")
-    try:
-        local_parts = [int(p) for p in __version__.split('.')]
-        latest_parts = [int(p) for p in latest.split('.')]
-    except (TypeError, ValueError):
+    if _parse_version(latest) is None:
         logger.warning("Could not parse version strings: local=%r latest=%r", __version__, latest)
         return False, latest
-
-    for i in range(max(len(local_parts), len(latest_parts))):
-        lp = local_parts[i] if i < len(local_parts) else 0
-        rp = latest_parts[i] if i < len(latest_parts) else 0
-        if rp > lp:
-            return True, latest
-        if lp > rp:
-            return False, latest
-
-    return False, latest
-
-
-def _expected_sha256():
-    """Return the SHA-256 published for the release asset, if GitHub exposes it."""
-    try:
-        response = requests.get(RELEASE_API_URL, timeout=5)
-        if response.status_code != 200:
-            return None
-        for asset in response.json().get("assets", []):
-            if asset.get("name") == ASSET_NAME:
-                digest = asset.get("digest") or ""
-                if digest.startswith("sha256:"):
-                    return digest.split(":", 1)[1].lower()
-    except Exception as e:
-        logger.debug("Could not read release digest: %s", e)
-    return None
+    return _is_newer(latest), latest
 
 
 def _file_sha256(path):
@@ -118,9 +121,22 @@ def start_update_process():
         new_exe = current_exe + ".new"
         old_exe = current_exe + ".old"
 
-        # 1. Download the latest EXE
-        logger.info(f"Downloading update from {RELEASE_EXE_URL}...")
-        response = requests.get(RELEASE_EXE_URL, stream=True, timeout=30)
+        # 1. Resolve the release once: version, asset URL and digest all come from it.
+        release = _fetch_latest_release()
+        if not release or not release.get("url"):
+            logger.error("Update aborted: latest release information is unavailable.")
+            return False
+        if not _is_newer(release["version"]):
+            logger.warning("Update aborted: release %s is not newer than %s.", release["version"], __version__)
+            return False
+        if not release.get("sha256"):
+            # Never install (and run elevated) a binary that cannot be verified.
+            logger.error("Update aborted: release %s has no published SHA-256 digest.", release["version"])
+            return False
+
+        # 2. Download that release's EXE
+        logger.info(f"Downloading update {release['version']} from {release['url']}...")
+        response = requests.get(release["url"], stream=True, timeout=30)
         if response.status_code != 200:
             logger.error(f"Failed to download update: HTTP {response.status_code}")
             return False
@@ -143,38 +159,33 @@ def start_update_process():
             _safe_remove(new_exe)
             return False
 
-        # 2. Integrity checks: real PE binary + published SHA-256 when available.
+        # 3. Integrity checks: real PE binary + the release's published SHA-256 (required).
         if not _valid_download(new_exe):
             _safe_remove(new_exe)
             return False
 
-        expected_sha = _expected_sha256()
-        if expected_sha:
-            actual_sha = _file_sha256(new_exe)
-            if actual_sha != expected_sha:
-                logger.error(
-                    "Update checksum mismatch (expected %s, got %s)", expected_sha, actual_sha
-                )
-                _safe_remove(new_exe)
-                return False
-            logger.info("Update SHA-256 verified.")
-        else:
-            logger.warning("Release digest unavailable; only basic integrity checks were applied.")
+        expected_sha = release["sha256"]
+        actual_sha = _file_sha256(new_exe)
+        if actual_sha != expected_sha:
+            logger.error(
+                "Update checksum mismatch (expected %s, got %s)", expected_sha, actual_sha
+            )
+            _safe_remove(new_exe)
+            return False
+        logger.info("Update SHA-256 verified.")
 
-        # Remove "Mark of the Web" — Windows blocks DLL extraction from internet-downloaded exes
+        # Remove "Mark of the Web" — Windows blocks DLL extraction from internet-downloaded
+        # exes. Deleting the Zone.Identifier stream is all Unblock-File does; the old
+        # PowerShell call interpolated the path into a command string ($ / backtick
+        # in a folder name were expanded).
         try:
             zone_file = new_exe + ":Zone.Identifier"
             if os.path.exists(zone_file):
                 os.remove(zone_file)
         except Exception:
             pass
-        try:
-            subprocess.run(["powershell", "-Command", f'Unblock-File -Path "{new_exe}"'],
-                           capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
-        except Exception:
-            pass
 
-        # 3. In-place swap with rollback.
+        # 4. In-place swap with rollback.
         logger.info("Executing In-Place Swap...")
         try:
             if os.path.exists(old_exe):
@@ -195,7 +206,7 @@ def start_update_process():
                     os.rename(old_exe, current_exe)
                 raise
 
-            # 4. Launch the new version (UAC elevation, detached from this job).
+            # 5. Launch the new version (UAC elevation, detached from this job).
             logger.info("Launching new executable requesting UAC Elevation...")
             import ctypes
             # SW_SHOWNORMAL = 1
@@ -213,7 +224,7 @@ def start_update_process():
                 creation_flags = 0x01000000 | 0x00000008  # CREATE_BREAKAWAY_FROM_JOB | DETACHED_PROCESS
                 subprocess.Popen([current_exe], creationflags=creation_flags)
 
-            # 5. Release hardware resources before terminating.
+            # 6. Release hardware resources before terminating.
             try:
                 # Tell background hardware threads to shut down and release WMI/COM locks
                 from src.HardwareMonitor import _lhm_worker

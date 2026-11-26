@@ -52,6 +52,8 @@ class DiscordIPC:
         # set_mute can be called from the hotkey worker thread while the RPC
         # thread is polling; serialize pipe writes so frames never interleave.
         self._write_lock = threading.Lock()
+        # Back-off after a transient AUTHENTICATE failure (timeout / pipe error)
+        self._next_auth_attempt = 0.0
 
 
     @property
@@ -139,12 +141,43 @@ class DiscordIPC:
             logger.warning(f"Failed to send IPC AUTHORIZE: {e}")
             return False
 
+    def _store_tokens(self, tokens):
+        """Persist the OAuth tokens (secret_store protects *token* keys with DPAPI)."""
+        self.prefs.preferences["discord_access_token"] = tokens.get("access_token", "")
+        if tokens.get("refresh_token"):
+            self.prefs.preferences["discord_refresh_token"] = tokens["refresh_token"]
+        try:
+            expires_in = float(tokens.get("expires_in") or 0)
+        except (TypeError, ValueError):
+            expires_in = 0.0
+        # Refresh a minute early; 0 = unknown expiry
+        self.prefs.preferences["discord_auth_expires"] = (time.time() + expires_in - 60) if expires_in > 0 else 0
+        self.prefs.save_preferences()
+
+    def _clear_tokens(self):
+        self.prefs.preferences["discord_access_token"] = ""
+        self.prefs.preferences["discord_refresh_token"] = ""
+        self.prefs.preferences["discord_auth_expires"] = 0
+        self.prefs.save_preferences()
+
+    def _refresh_tokens(self) -> bool:
+        """Use the stored refresh token to get a new access token (Discord access
+        tokens expire after about 7 days)."""
+        refresh = (self.prefs.get_preference("discord_refresh_token") or "").strip()
+        if not refresh:
+            return False
+        data = self._token_request({"grant_type": "refresh_token", "refresh_token": refresh})
+        if not data:
+            return False
+        self._store_tokens(data)
+        logger.info("Discord: access token refreshed")
+        return True
+
     def _complete_code_exchange(self, code) -> bool:
-        new_token = self._exchange_code(code)
-        if new_token and self.prefs:
-            self.prefs.preferences["discord_access_token"] = new_token
-            self.prefs.save_preferences()
-            if self._authenticate(new_token):
+        tokens = self._exchange_code(code)
+        if tokens and self.prefs:
+            self._store_tokens(tokens)
+            if self._authenticate(tokens["access_token"]) == "ok":
                 self._authenticated = True
                 self._subscribe()
                 return True
@@ -154,21 +187,40 @@ class DiscordIPC:
         """Perform AUTHORIZE/AUTHENTICATE flow to get voice access."""
         if not self.prefs:
             return False
+        now = time.time()
+        if now < self._next_auth_attempt:
+            return False
 
         token = self.prefs.get_preference("discord_access_token")
-        
-        # 1) If we have a token, try to AUTHENTICATE
+
+        # 1) If we have a token, try to AUTHENTICATE (refreshing it when expired)
         if token:
+            try:
+                expires = float(self.prefs.get_preference("discord_auth_expires") or 0)
+            except (TypeError, ValueError):
+                expires = 0.0
+            if expires and now >= expires and self._refresh_tokens():
+                token = self.prefs.get_preference("discord_access_token")
+
             logger.info("Discord: Attempting authentication with stored token...")
-            if self._authenticate(token):
+            result = self._authenticate(token)
+            if result == "rejected" and self._refresh_tokens():
+                token = self.prefs.get_preference("discord_access_token")
+                result = self._authenticate(token)
+
+            if result == "ok":
                 self._authenticated = True
                 self._subscribe()
                 return True
-            else:
-                logger.warning("Discord: Token invalid/expired, clearing...")
-                self.prefs.preferences["discord_access_token"] = ""
-                self.prefs.save_preferences()
+            if result == "rejected":
+                # Only an explicit ERROR reply from Discord means the token is bad.
+                logger.warning("Discord: Token rejected and could not be refreshed, clearing...")
+                self._clear_tokens()
                 token = None
+            else:
+                # Timeout / pipe error / unrelated frame: keep the token and retry later.
+                self._next_auth_attempt = now + 10.0
+                return False
 
         # 2) If no token, check if ExtensionReceiver captured a 'code'
         if not token and self.extension_receiver:
@@ -179,58 +231,74 @@ class DiscordIPC:
                     return True
         return False
 
-    def _exchange_code(self, code):
-        """Exchange OAuth code for access_token via Discord API."""
+    def _token_request(self, grant):
+        """POST to Discord's OAuth token endpoint; returns the token dict or None."""
         secret = (self.prefs.get_preference("discord_client_secret") or "").strip()
         if not secret:
-            logger.error("Discord Client Secret missing — cannot exchange code")
+            logger.error("Discord Client Secret missing — cannot request a token")
             return None
+        payload = {"client_id": self.client_id, "client_secret": secret}
+        payload.update(grant)
+        try:
+            resp = requests.post("https://discord.com/api/oauth2/token", data=payload, timeout=5)
+            data = resp.json()
+            if isinstance(data, dict) and data.get("access_token"):
+                return data
+            # Never log the response verbatim: it may echo credentials
+            logger.warning("Discord token request (%s) failed: %s",
+                           grant.get("grant_type"), (data or {}).get("error") if isinstance(data, dict) else data)
+        except Exception as e:
+            logger.error(f"Discord token request error: {e}")
+        return None
 
+    def _exchange_code(self, code):
+        """Exchange an OAuth code for tokens (access_token, refresh_token, expires_in)."""
         port = self.prefs.get_preference("discord_local_port") or 8888
         host = self.prefs.get_preference("discord_redirect_host") or "127.0.0.1"
         redirect_uri = f"http://{host}:{port}"
-
-        for payload in (
-            {
-                "client_id": self.client_id,
-                "client_secret": secret,
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-            },
-            {
-                "client_id": self.client_id,
-                "client_secret": secret,
-                "grant_type": "authorization_code",
-                "code": code,
-            },
+        for grant in (
+            {"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri},
+            {"grant_type": "authorization_code", "code": code},
         ):
-            try:
-                resp = requests.post("https://discord.com/api/oauth2/token", data=payload, timeout=5)
-                data = resp.json()
-                if "access_token" in data:
-                    return data["access_token"]
-                logger.warning(f"Discord Token Exchange attempt failed: {data}")
-            except Exception as e:
-                logger.error(f"Discord Token Exchange error: {e}")
+            data = self._token_request(grant)
+            if data:
+                return data
         return None
 
     def _authenticate(self, token):
-        """Send AUTHENTICATE command with the token."""
+        """Send AUTHENTICATE with the token.
+
+        Returns "ok", "rejected" (Discord answered this request with an ERROR, i.e.
+        the token is invalid/expired) or "error" (timeout, pipe error, no matching
+        reply) — only "rejected" may lead to discarding the stored token.
+        """
+        nonce = str(uuid.uuid4())
         try:
             self._send(self.OP_FRAME, {
                 "cmd": "AUTHENTICATE",
                 "args": {"access_token": token},
-                "nonce": str(uuid.uuid4())
+                "nonce": nonce
             })
-            resp = self._recv(timeout=3.0)
-            if resp and resp.get("cmd") == "AUTHENTICATE" and not resp.get("evt") == "ERROR":
-                logger.info("Discord Authentication SUCCESS")
-                return True
-            logger.warning(f"Discord Authentication FAILED: {resp}")
-            return False
-        except Exception:
-            return False
+        except Exception as e:
+            logger.debug(f"Discord AUTHENTICATE send failed: {e}")
+            return "error"
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            resp = self._recv(timeout=max(0.05, deadline - time.time()))
+            if not resp:
+                time.sleep(0.02)
+                continue
+            if resp.get("cmd") != "AUTHENTICATE" or resp.get("nonce") not in (nonce, None):
+                continue  # unrelated frame (e.g. a queued event): keep waiting
+            if resp.get("evt") == "ERROR":
+                logger.warning("Discord Authentication REJECTED: %s",
+                               (resp.get("data") or {}).get("message", "unknown error"))
+                return "rejected"
+            logger.info("Discord Authentication SUCCESS")
+            return "ok"
+        logger.warning("Discord Authentication: no reply from Discord (will retry)")
+        return "error"
 
     def _subscribe(self):
         """Subscribe to voice settings and immediately request initial voice state."""

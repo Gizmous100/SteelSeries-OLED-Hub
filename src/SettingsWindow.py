@@ -41,11 +41,30 @@ class Colors:
     INPUT_FG   = "#eeeeee"
     
     DANGER     = "#e74c3c"
+    WARNING    = "#f0ad4e"
 
 FONT_HEADER = ("Segoe UI", 14, "bold")
 FONT_SUBHEADER = ("Segoe UI", 10, "bold")
 FONT_BODY = ("Segoe UI", 9)
 FONT_SMALL = ("Segoe UI", 8)
+
+
+def _parse_port(raw, default):
+    """Port from a text field, limited to 1-65535 (an out-of-range value made the
+    local receiver thread die with OverflowError)."""
+    try:
+        port = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    return port if 0 < port < 65536 else default
+
+
+def _is_running_as_admin() -> bool:
+    """True when the hub process is elevated (required by PresentMon for live game FPS)."""
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
 
 
 class CustomTitleBar(tk.Frame):
@@ -466,13 +485,42 @@ class SettingsGUI:
         # Display
         p_disp = tk.Frame(self.content_area, bg=Colors.CONTENT)
         self._header(p_disp, "📺 Display Features")
-        self._toggle_row(p_disp, "Enable Clock", self.vars["display_timer"], command=lambda: self._exclusive_toggle("display_timer", "display_hw_monitor"))
+        self._toggle_row(p_disp, "Enable Clock", self.vars["display_timer"], command=lambda: self._clock_stats_toggle("display_timer"))
         self._toggle_row(p_disp, "Enable Music Info", self.vars["display_player"])
         self._dropdown_row(p_disp, "Player Style", self.vars["player_style"], ["Standard", "Compact", "Centered", "Ticker", "Minimal"])
-        self._toggle_row(p_disp, "Always Show System Stats", self.vars["display_hw_monitor"], command=lambda: self._exclusive_toggle("display_hw_monitor", "display_timer"))
+        self._toggle_row(p_disp, "Always Show System Stats", self.vars["display_hw_monitor"], command=lambda: self._clock_stats_toggle("display_hw_monitor"))
+        self._toggle_row(
+            p_disp,
+            "Auto-switch to System Stats in Games (only while gaming)",
+            self.vars["auto_hw_monitor_game"],
+            command=self._on_auto_switch_toggle,
+        )
+        tk.Label(
+            p_disp,
+            text=(
+                "ℹ Clock and \"Always Show System Stats\" can both be on only with Auto-switch enabled: "
+                "System Stats appear while gaming and the clock outside games. Without Auto-switch, "
+                "System Stats are shown all the time, so the clock is turned off."
+            ),
+            font=FONT_SMALL, fg=Colors.TEXT_DIM, bg=Colors.CONTENT,
+            anchor="w", justify="left", wraplength=420,
+        ).pack(fill="x", anchor="w", padx=15, pady=(0, 4))
         tk.Frame(p_disp, bg=Colors.CONTENT, height=10).pack()
-        self._toggle_row(p_disp, "Show Game FPS", self.vars["show_game_fps"])
-        self._toggle_row(p_disp, "Auto-switch to System Stats in Games (needs FPS)", self.vars["auto_hw_monitor_game"])
+        self._toggle_row(p_disp, "Show Game FPS (requires Administrator)", self.vars["show_game_fps"])
+        if _is_running_as_admin():
+            fps_note = "✓ Running as Administrator — live game FPS is available."
+            fps_note_fg = Colors.TEXT_DIM
+        else:
+            fps_note = (
+                "⚠ Not running as Administrator — the OLED FPS slot shows \"Admin\" instead of FPS. "
+                "Run SteelSeries-OLED-Hub.exe as administrator (with \"Run on Start\" enabled, "
+                "the hub starts elevated at every logon)."
+            )
+            fps_note_fg = Colors.WARNING
+        tk.Label(
+            p_disp, text=fps_note, font=FONT_SMALL, fg=fps_note_fg, bg=Colors.CONTENT,
+            anchor="w", justify="left", wraplength=420,
+        ).pack(fill="x", anchor="w", padx=15, pady=(0, 4))
         self._toggle_row(p_disp, "Show Headset Battery on Clock (needs HID Sync)", self.vars["show_headset_battery"])
         self._toggle_row(p_disp, "  └ Show Battery Percentage Number", self.vars["show_battery_percent"])
         available_gpus = ["Auto"]
@@ -616,7 +664,7 @@ class SettingsGUI:
         self._hotkey_row(p_hot, "Mute Mic (Optional)", self.vars["hotkey_mute_2"])
         tk.Frame(p_hot, bg=Colors.CONTENT, height=10).pack()
         self._header(p_hot, "🖩 Calculator")
-        self._hotkey_row(p_hot, "Toggle Calculator", self.vars["hotkey_calculator"])
+        self._hotkey_row(p_hot, "Toggle Calculator (Ctrl + key)", self.vars["hotkey_calculator"])
         self.pages["Hotkeys"] = p_hot
 
         # Advanced
@@ -801,8 +849,7 @@ class SettingsGUI:
             threading.Thread(target=_worker, daemon=True).start()
 
     def _get_discord_redirect_uri(self) -> str:
-        raw_port = str(self.vars["discord_local_port"].get() or "8888").strip()
-        port = int(raw_port) if raw_port.isdigit() else 8888
+        port = _parse_port(self.vars["discord_local_port"].get() or "8888", 8888)
         return f"http://127.0.0.1:{port}"
 
     def _open_discord_portal(self):
@@ -825,8 +872,7 @@ class SettingsGUI:
 
         cid = str(self.vars["discord_client_id"].get() or "").strip()
         secret = str(self.vars["discord_client_secret"].get() or "").strip()
-        raw_port = str(self.vars["discord_local_port"].get() or "8888").strip()
-        port = int(raw_port) if raw_port.isdigit() else 8888
+        port = _parse_port(self.vars["discord_local_port"].get() or "8888", 8888)
         redirect_uri = f"http://127.0.0.1:{port}"
 
         self.vars["discord_client_id"].set(cid)
@@ -872,6 +918,8 @@ class SettingsGUI:
         self.prefs.preferences["discord_local_port"] = port
         if prev_cid != cid:
             self.prefs.preferences["discord_access_token"] = ""
+            self.prefs.preferences["discord_refresh_token"] = ""
+            self.prefs.preferences["discord_auth_expires"] = 0
         self.prefs.save_preferences()
 
         if self.on_save:
@@ -919,8 +967,22 @@ class SettingsGUI:
     def _open_log_folder(self):
         os.startfile(f_app_data())
 
-    def _exclusive_toggle(self, k1, k2):
-        if self.vars[k1].get(): self.vars[k2].set(False)
+    def _clock_stats_toggle(self, changed_key):
+        """Clock and Always Show System Stats exclude each other unless Auto-switch
+        is on (then the stats cover games and the clock everything else)."""
+        if self.vars["auto_hw_monitor_game"].get() or not self.vars[changed_key].get():
+            return
+        other = "display_hw_monitor" if changed_key == "display_timer" else "display_timer"
+        self.vars[other].set(False)
+
+    def _on_auto_switch_toggle(self):
+        # Without Auto-switch the System Stats are always on screen, so the clock goes off.
+        if (
+            not self.vars["auto_hw_monitor_game"].get()
+            and self.vars["display_hw_monitor"].get()
+            and self.vars["display_timer"].get()
+        ):
+            self.vars["display_timer"].set(False)
 
     def _header(self, p, t):
         tk.Label(p, text=t, font=FONT_HEADER, fg=Colors.TEXT_MAIN, bg=Colors.CONTENT).pack(anchor="w", pady=(0, 14))
@@ -1071,6 +1133,8 @@ class SettingsGUI:
                 if k in ["scrollbar_padding", "text_padding_left", "local_port", "discord_local_port", "spotify_fetch_delay", "hw_polling_interval", "weather_display_time"]:
                     try: val = int(val)
                     except Exception: val = UserPreferences.DEFAULT.get(k, 0)
+                if k in ("local_port", "discord_local_port"):
+                    val = _parse_port(val, UserPreferences.DEFAULT.get(k, 8888))
 
                 if k == "afk_timeout_minutes":
                     try:
@@ -1092,6 +1156,14 @@ class SettingsGUI:
                 self.prefs.preferences[k] = val
             
             self.prefs.preferences["use_polish_days"] = (self.prefs.preferences.get("oled_language") == "PL")
+            # Clock + Always Show System Stats together require Auto-switch.
+            if (
+                self.prefs.preferences.get("display_timer")
+                and self.prefs.preferences.get("display_hw_monitor")
+                and not self.prefs.preferences.get("auto_hw_monitor_game")
+            ):
+                self.prefs.preferences["display_timer"] = False
+                self.vars["display_timer"].set(False)
             # rgb_enabled/rgb_color are real preferences (used by the lighting
             # layer). Never reset them here — that silently disabled user RGB.
             self.prefs.save_preferences()

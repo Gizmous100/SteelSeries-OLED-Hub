@@ -7,6 +7,7 @@ from json import loads, dumps
 import webbrowser
 import logging
 import os
+import secrets
 import socket
 
 from src import secret_store
@@ -106,15 +107,20 @@ class SpotifyAPI:
                     logger.info("No token found and prompt_user=False. Skipping browser auth.")
                     return
 
+                # Random state ties the localhost callback to this exact authorization
+                # attempt (CSRF protection: any page or local process could otherwise
+                # deliver its own code to the callback during the 2-minute window).
+                oauth_state = secrets.token_urlsafe(24)
                 url = self.SPOTIFY_API_URL + "/authorize?"
                 url += urlencode({
                     "scope": "user-read-playback-state user-read-currently-playing",
                     "response_type": "code",
                     "client_id": self.client_id,
-                    "redirect_uri": self.redirect_uri
+                    "redirect_uri": self.redirect_uri,
+                    "state": oauth_state,
                 })
 
-                server = self.start_server()
+                server = self.start_server(oauth_state)
                 
                 if server.error: # Check for bind error immediately
                     logger.error(f"Cannot start auth server: {server.error}")
@@ -255,7 +261,7 @@ class SpotifyAPI:
             logger.error(f"Failed to refresh token: {e}")
             return False
 
-    def fetch_song(self):
+    def fetch_song(self, _retried=False):
         """Fetch currently playing song from Spotify."""
         if not self.ready or not self.token:
             return None
@@ -276,9 +282,10 @@ class SpotifyAPI:
                 return None
             
             if response.status == 401:
-                # Token expired, try refresh
-                if self.refresh_access_token():
-                    return self.fetch_song()
+                # Token expired, try refresh — once. Unbounded recursion kept calling
+                # the API when Spotify rejected every freshly refreshed token.
+                if not _retried and self.refresh_access_token():
+                    return self.fetch_song(_retried=True)
                 return None
             
             if response.status != 200:
@@ -304,15 +311,16 @@ class SpotifyAPI:
             return None
 
 
-    def start_server(self):
+    def start_server(self, expected_state=None):
         """Create and return a raw socket server wrapper."""
-        
+
         class RawSpotifyServer:
-            def __init__(self, port, redirect_uri):
+            def __init__(self, port, redirect_uri, expected_state):
                 self.port = port
                 self.code = None
                 self.error = None
                 self.socket = None
+                self.expected_state = expected_state or ""
                 
                 try:
                     self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -343,10 +351,33 @@ class SpotifyAPI:
                             
                         request_str = request_data.decode('utf-8', errors='ignore')
                         first_line = request_str.split('\r\n')[0]
-                        
-                        response_body = "<html><body><h1>Authentication Successful!</h1><p>You can close this window now. (v7 - RAW SOCKET)</p><script>window.close()</script></body></html>"
+
+                        accepted = False
+                        if first_line.startswith("GET ") and "/callback" in first_line:
+                            try:
+                                path_query = first_line.split(" ")[1]
+                                query = parse_qs(urlparse(path_query).query)
+                                state = (query.get('state') or [""])[0]
+                                # Only the callback of our own authorization request counts.
+                                if self.expected_state and secrets.compare_digest(state, self.expected_state):
+                                    if 'code' in query:
+                                        self.code = query['code'][0]
+                                        accepted = True
+                                    elif 'error' in query:
+                                        self.error = query['error'][0]
+                                else:
+                                    logger.warning("Ignored Spotify callback with a missing or wrong state")
+                            except Exception as e:
+                                logger.error(f"Failed to parse raw request: {e}")
+
+                        if accepted:
+                            status = "200 OK"
+                            response_body = "<html><body><h1>Authentication Successful!</h1><p>You can close this window now.</p><script>window.close()</script></body></html>"
+                        else:
+                            status = "400 Bad Request"
+                            response_body = "<html><body><h1>Invalid request</h1></body></html>"
                         response = (
-                            "HTTP/1.1 200 OK\r\n"
+                            f"HTTP/1.1 {status}\r\n"
                             "Content-Type: text/html\r\n"
                             "Connection: close\r\n"
                             f"Content-Length: {len(response_body)}\r\n"
@@ -355,18 +386,6 @@ class SpotifyAPI:
                         )
                         conn.sendall(response.encode('utf-8'))
 
-                        if "GET" in first_line and "/callback" in first_line:
-                            try:
-                                path_query = first_line.split(" ")[1]
-                                query = parse_qs(urlparse(path_query).query)
-                                if 'code' in query:
-                                    self.code = query['code'][0]
-                                elif 'error' in query:
-                                    self.error = query['error'][0]
-                            except Exception as e:
-                                logger.error(f"Failed to parse raw request: {e}")
-                                self.error = "Parse error"
-                            
                 except TimeoutError:
                     pass
                 except Exception as e:
@@ -381,4 +400,4 @@ class SpotifyAPI:
                         pass
                     self.socket = None
                     
-        return RawSpotifyServer(self.port, self.redirect_uri)
+        return RawSpotifyServer(self.port, self.redirect_uri, expected_state)

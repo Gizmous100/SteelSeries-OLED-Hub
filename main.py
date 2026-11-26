@@ -193,6 +193,44 @@ if __name__ == "__main__":
 
         lock_file_path = path.join(app_data_path, ".lock")
 
+        # Serialise the whole "find old instances -> terminate -> write lock" phase
+        # with a named mutex. Without it, two launches started close together each
+        # terminated the other during the scan and no hub was left running.
+        startup_mutex = None
+        try:
+            from ctypes import wintypes
+            _k32 = ctypes.windll.kernel32
+            _k32.CreateMutexW.restype = wintypes.HANDLE
+            _k32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+            _k32.WaitForSingleObject.restype = wintypes.DWORD
+            _k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            _k32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+            startup_mutex = _k32.CreateMutexW(None, False, "Local\\SteelSeriesOLEDHub.Startup")
+            if startup_mutex:
+                # WAIT_OBJECT_0 (0) or WAIT_ABANDONED (0x80): we own it; timeout: continue anyway
+                if _k32.WaitForSingleObject(startup_mutex, 20000) not in (0, 0x80):
+                    logger.warning("Startup mutex wait timed out; continuing")
+        except Exception as e:
+            logger.debug("Startup mutex unavailable: %s", e)
+            startup_mutex = None
+
+        def _release_startup_mutex():
+            if startup_mutex:
+                try:
+                    ctypes.windll.kernel32.ReleaseMutex(startup_mutex)
+                except Exception:
+                    pass
+
+        hub_exe_names = ("steelseries-oled-hub.exe", "steelseries-oled-hub", "oled-customizer.exe", "oled-customizer")
+
+        def _is_hub_process(pid_to_check):
+            """True only when the PID really is a hub instance. A stale .lock (e.g. after
+            a reboot) can hold a PID that Windows has since reused for another process."""
+            try:
+                return psutil.Process(pid_to_check).name().lower() in hub_exe_names
+            except Exception:
+                return False
+
         my_pid = getpid()
         my_ppid = os.getppid()
         my_exe = path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__)
@@ -206,7 +244,7 @@ if __name__ == "__main__":
                     content = f.read().strip()
                     if content.isdigit():
                         pid = int(content)
-                        if pid not in (my_pid, my_ppid) and pid_exists(pid):
+                        if pid not in (my_pid, my_ppid) and pid_exists(pid) and _is_hub_process(pid):
                             pids_to_kill.add(pid)
             except Exception:
                 pass
@@ -222,7 +260,7 @@ if __name__ == "__main__":
                     exe = proc.info.get("exe") or ""
                     if pid in (my_pid, my_ppid):
                         continue
-                    if pname in ("steelseries-oled-hub.exe", "steelseries-oled-hub", "oled-customizer.exe", "oled-customizer"):
+                    if pname in hub_exe_names:
                         # Only terminate if it's from the same directory as this instance.
                         try:
                             proc_exe_dir = path.dirname(path.abspath(exe))
@@ -268,12 +306,15 @@ if __name__ == "__main__":
 
         # Write the lock atomically, then verify that another simultaneous
         # launch did not overwrite it in the meantime.
-        tmp_lock_path = lock_file_path + ".tmp"
-        with open(tmp_lock_path, "w") as lock_file:
-            lock_file.write(str(my_pid))
-            lock_file.flush()
-            os.fsync(lock_file.fileno())
-        os.replace(tmp_lock_path, lock_file_path)
+        tmp_lock_path = "%s.%d.tmp" % (lock_file_path, my_pid)
+        try:
+            with open(tmp_lock_path, "w") as lock_file:
+                lock_file.write(str(my_pid))
+                lock_file.flush()
+                os.fsync(lock_file.fileno())
+            os.replace(tmp_lock_path, lock_file_path)
+        finally:
+            _release_startup_mutex()
 
         time.sleep(0.2)
         try:

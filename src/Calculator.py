@@ -204,8 +204,10 @@ class Calculator:
         'enter', 'backspace', 'delete'
         """
         key = str(key_str).strip().lower()
+        if not key:
+            return  # "" is a substring of every string; never append an empty digit
 
-        if key in "0123456789":
+        if len(key) == 1 and key in "0123456789":
             self._append_digit(key)
         elif key in ("+", "-", "*", "/"):
             self._apply_operator(key)

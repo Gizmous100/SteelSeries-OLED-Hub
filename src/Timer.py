@@ -454,6 +454,62 @@ class Timer:
         self._cached_image = image
         return image
 
+    def get_layout_image(self, center_drawer=None, weather_widget=True):
+        """Clock-screen layout with the clock face replaced by center_drawer.
+
+        Everything around the face stays exactly as on the clock: headset battery
+        on the right, lock-key badges at the bottom, mute/deafen icons top-left and
+        (when weather_widget is True) the compact weather widget on the left.
+        center_drawer(draw, x_left, x_right) draws the centre — e.g. the FPS value
+        or the centred weather — or None leaves it empty.
+        """
+        battery = self._battery()
+        mute_tuple = self._mute_status()
+        weather_tuple = self._weather() if weather_widget else None
+        lock_tuple = self._lock_keys()
+
+        image = Image.new(
+            mode="1",
+            size=(self.config.width, self.config.height),
+            color=self.config.secondary
+        )
+        draw = ImageDraw.Draw(image)
+
+        left_active = (mute_tuple is not None) or (weather_tuple is not None)
+        x_left = 32 if left_active else 2
+        x_right = 109 if battery is not None else (self.config.width - 2)
+        avail_w = max(40, x_right - x_left)
+        cx = (x_left + x_right) / 2.0
+        cy = self.config.height / 2.0
+
+        if callable(center_drawer):
+            try:
+                center_drawer(draw, x_left, x_right)
+            except Exception:
+                pass
+        if lock_tuple:
+            self._draw_lock_badges(draw, lock_tuple, self.Style.STANDARD, cx, cy, avail_w, x_left, x_right)
+        if weather_tuple is not None:
+            self._draw_weather(image, draw, weather_tuple, mute_tuple)
+        elif mute_tuple is not None:
+            self._draw_mute_icons_top(image, mute_tuple)
+        if battery is not None:
+            self._draw_battery(draw, battery)
+        return image
+
+    def draw_value_face(self, draw, x_left, x_right, value, caption):
+        """Big value + caption in the Standard clock arrangement (time -> value,
+        date -> caption), auto-fitted between x_left and x_right. Used for FPS."""
+        avail_w = max(40, x_right - x_left)
+        cx = (x_left + x_right) / 2.0
+        cy = self.config.height / 2.0
+        value_font = self._fit_fixed_width_font(value, 20, 12, avail_w - 2)
+        caption_font = self._fit_text_font(caption, 12, 10, avail_w - 2)
+        self._draw_fixed_width_text(
+            draw, cx, cy - 6, value, font=value_font, fill=self.config.primary, anchor="mm"
+        )
+        draw.text((cx, cy + 9), caption, font=caption_font, fill=self.config.primary, anchor="mm")
+
     def get_current_time(self):
         current_time = localtime()
         seconds = ":%S" if self.display_seconds else ""

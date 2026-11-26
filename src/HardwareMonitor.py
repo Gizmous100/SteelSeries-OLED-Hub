@@ -229,6 +229,33 @@ def _release_lhm_worker():
             _lhm_worker.stop()
 
 
+# Foreground processes that are never treated as games (game detection and the
+# live FPS target): browsers, launchers, tools, media players and the hub itself.
+_NON_GAME_PROCESSES = frozenset({
+    "explorer.exe", "chrome.exe", "firefox.exe", "msedge.exe",
+    "opera.exe", "brave.exe", "vivaldi.exe", "discord.exe", "spotify.exe",
+    "devenv.exe", "code.exe", "antigravity.exe", "pycharm64.exe", "idea64.exe",
+    "obs64.exe", "steam.exe", "steamwebhelper.exe", "epicgameslauncher.exe",
+    "ds4windows.exe", "steelseriesgg.exe", "steelseriesggclient.exe",
+    "steelseriesengine.exe", "steelseriesengine3.exe", "steelseries-oled-hub.exe",
+    "oled-customizer.exe", "searchapp.exe", "searchhost.exe",
+    "applicationframehost.exe", "systemsettings.exe", "lockapp.exe",
+    "taskmgr.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+    "windowsterminal.exe", "notepad.exe", "vlc.exe", "mpc-hc64.exe",
+    "mpv.exe", "potplayer.exe", "potplayermini64.exe",
+    # Media players, office / document viewers, remote desktops and VMs: they can
+    # cover the whole monitor (fullscreen video, slideshow, maximised window with an
+    # auto-hidden taskbar) without being a game.
+    "mpc-hc.exe", "mpc-be.exe", "mpc-be64.exe", "potplayermini.exe", "potplayer64.exe",
+    "kodi.exe", "wmplayer.exe", "smplayer.exe", "mpvnet.exe", "plex.exe", "stremio.exe",
+    "powerpnt.exe", "winword.exe", "excel.exe", "onenote.exe", "outlook.exe",
+    "acrobat.exe", "acrord32.exe", "sumatrapdf.exe",
+    "mstsc.exe", "msrdc.exe", "vmware.exe", "vmware-vmx.exe", "vmconnect.exe",
+    "virtualbox.exe", "virtualboxvm.exe",
+    "teams.exe", "ms-teams.exe", "zoom.exe", "slack.exe", "telegram.exe",
+})
+
+
 class HardwareMonitor:
     """
     Hardware monitor overlay for OLED display.
@@ -257,13 +284,16 @@ class HardwareMonitor:
         self._game_detect_ts = 0.0
         self._game_detect_cached = False
         self.fps_monitor = FPSMonitor()
-        if self.show_fps or self.auto_switch_game:
+        # Measure only the foreground application (mixing all processes made FPS jump).
+        # Game detection (auto-switch) is window based, so only Show Game FPS needs ETW.
+        self.fps_monitor.target_pid_provider = self.get_foreground_app_pid
+        if self.show_fps:
             self.fps_monitor.start()
 
     def update_preferences(self, preferences):
         self.show_fps = bool(preferences.get_preference("show_game_fps"))
         self.auto_switch_game = bool(preferences.get_preference("auto_hw_monitor_game"))
-        if self.show_fps or self.auto_switch_game:
+        if self.show_fps:
             self.fps_monitor.start()
         else:
             self.fps_monitor.stop()
@@ -311,6 +341,58 @@ class HardwareMonitor:
     def should_display(self) -> bool:
         return (time() - self._last_trigger) < self.timeout
 
+    def get_effective_fps(self) -> int:
+        """FPS shown by both FPS views: PresentMon first, then LHM's 'Frame Rate' sensor."""
+        fps = self.fps_monitor.get_fps()
+        if fps <= 0:
+            try:
+                lhm_fps = self._get_lhm_sensor("Gpu", "Factor", "Frame Rate")
+                if lhm_fps:
+                    fps = int(lhm_fps)
+            except Exception:
+                pass
+        return max(0, int(fps))
+
+    def is_game_rendering(self) -> bool:
+        """Stronger game signal for the in-game FPS view.
+
+        Window detection alone also matches maximised documents (auto-hidden taskbar),
+        slideshows or remote desktops. Games present frames continuously, so require
+        sustained rendering of the foreground app. Without PresentMon data (no admin /
+        DLL missing) fall back to window detection so the view can explain why.
+        """
+        mon = self.fps_monitor
+        if getattr(mon, "unavailable_reason", None) or not mon.is_running():
+            return True
+        return mon.is_rendering()
+
+    def get_foreground_app_pid(self):
+        """PID of the foreground application whose FPS should be measured.
+
+        None for the desktop/shell, the hub itself and known non-game apps
+        (_NON_GAME_PROCESSES), so the FPS slot shows "Idle" there.
+        """
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd or hwnd in (user32.GetDesktopWindow(), user32.GetShellWindow()):
+                return None
+            pid = ctypes.c_ulong()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            pid = int(pid.value)
+            if not pid or pid == os.getpid():
+                return None
+            try:
+                name = psutil.Process(pid).name().lower()
+            except Exception:
+                name = ""  # protected / exiting process: still worth measuring
+            if name in _NON_GAME_PROCESSES:
+                return None
+            return pid
+        except Exception:
+            return None
+
     def is_fullscreen_game_active(self) -> bool:
         """
         Detect whether a fullscreen or borderless-windowed game is currently active
@@ -346,20 +428,7 @@ class HardwareMonitor:
                 proc = psutil.Process(pid.value)
                 name = proc.name().lower()
 
-                ignored = {
-                    "explorer.exe", "chrome.exe", "firefox.exe", "msedge.exe",
-                    "opera.exe", "brave.exe", "vivaldi.exe", "discord.exe", "spotify.exe",
-                    "devenv.exe", "code.exe", "antigravity.exe", "pycharm64.exe", "idea64.exe",
-                    "obs64.exe", "steam.exe", "steamwebhelper.exe", "epicgameslauncher.exe",
-                    "ds4windows.exe", "steelseriesgg.exe", "steelseriesggclient.exe",
-                    "steelseriesengine.exe", "steelseriesengine3.exe", "steelseries-oled-hub.exe",
-                    "oled-customizer.exe", "searchapp.exe", "searchhost.exe",
-                    "applicationframehost.exe", "systemsettings.exe", "lockapp.exe",
-                    "taskmgr.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
-                    "windowsterminal.exe", "notepad.exe", "vlc.exe", "mpc-hc64.exe",
-                    "mpv.exe", "potplayer.exe", "potplayermini64.exe"
-                }
-                if name in ignored:
+                if name in _NON_GAME_PROCESSES:
                     self._game_detect_cached = False
                     return False
 
@@ -407,11 +476,6 @@ class HardwareMonitor:
         self._game_detect_cached = result
         return result
 
-    def is_game_running(self) -> bool:
-        if not self.auto_switch_game:
-            return False
-        return self.is_fullscreen_game_active()
-
     def _get_lhm_sensor(self, hw_type, sensor_type, name_contains=None):
         selected_gpu = self.preferences.get_preference("selected_gpu") or "Auto"
         return _lhm_worker.get_sensor(hw_type, sensor_type, name_contains, hw_name=selected_gpu if hw_type.lower() == "gpu" else None)
@@ -448,12 +512,7 @@ class HardwareMonitor:
         ram_used = self._get_lhm_sensor("Ram", "data", "used") or 0
         ram_total = self._get_lhm_sensor("Ram", "data", "total") or 0
         
-        fps = 0
-        if self.show_fps:
-            fps = self.fps_monitor.get_fps()
-            if fps <= 0:
-                lhm_fps = self._get_lhm_sensor("Gpu", "Factor", "Frame Rate")
-                if lhm_fps: fps = int(lhm_fps)
+        fps = self.get_effective_fps() if self.show_fps else 0
 
         # --- Layout ---
         col_width = w // 3
@@ -486,7 +545,11 @@ class HardwareMonitor:
                 val_text = f"{int(fps)}" + ("" if fps >= 100 else " FPS")
                 draw_centered(val_text, c3_x, y_text2)
             else:
-                draw_centered("Idle", c3_x, y_text2)
+                # "Idle" only when the FPS capture is actually running; otherwise say why
+                # it cannot measure (no admin rights / missing or failing DLL).
+                reason = getattr(self.fps_monitor, "unavailable_reason", None)
+                label = "Admin" if reason == "admin" else ("N/A" if reason else "Idle")
+                draw_centered(label, c3_x, y_text2)
         else:
             draw_centered(f"{int(ram_total)}GB", c3_x, y_text2)
 

@@ -8,6 +8,84 @@ Complete version history for **SteelSeries OLED & RGB Hub**, developed and expan
 
 ---
 
+## [`v1.54`] — 2026-11-26 — 🎨 Per-Profile RGB Sync, In-Game FPS View & Full Code-Review Hardening
+### ✨ Fix / Feature Upgrade (`+0.01`)
+- **Per-profile RGB colour sync (`src/DisplayManager.py`, `src/UserPreferences.py`, `src/SteelSeriesAPI.py`):**
+  - Added `profile_colors` preference (map of profile name → `[R, G, B]`) and `profile_lighting_enabled` master toggle.
+  - On every SteelSeries / GG profile switch, the hub now applies the target profile's colour **only when it differs from the currently applied colour** — if profiles share the same colour set, no GameSense LIGHTING event is sent, so the keyboard/mouse/RGB backlight no longer blinks on every switch.
+  - Only overrides SteelSeries GG native lighting when a profile has an explicit entry in `profile_colors` or `rgb_enabled` is `True`; otherwise keeps/releases control to SteelSeries GG (including when switching back to onboard profile slots).
+  - AFK blackout always takes priority: during AFK the backlight stays off regardless of profile changes; the profile colour applies on wake.
+  - Colour changes still go through `SteelSeriesAPI.set_rgb_color()`, which emits LIGHTING events exclusively on real transitions (never in the 10 FPS render loop), preventing HTTP 429 and mouse profile lock-ups.
+  - Saving settings no longer reverts the active profile's colour to the global `rgb_color` — `update_preferences()` resolves the colour for the currently active profile.
+  - The colour of the loadout already active when the hub starts is now applied immediately (previously only after the first profile switch).
+  - All lighting I/O now runs on a single **Lighting-Worker** thread in `SteelSeriesAPI`: `set_lighting()` / `set_rgb_color()` only record the desired state (AFK blackout, user / profile colour, or GG native) and return immediately, and the worker applies the newest state. A profile switch racing AFK entry can no longer relight the keyboard/mouse during AFK, the OLED render loop never waits on lighting HTTP calls, and a profile switch during AFK stores the colour and applies it on wake.
+  - A lighting transition that fails to send (e.g. GG busy deploying a profile) is **retried** with back-off (2 s → 5 s → 10 s) until GameSense confirms it; previously the colour was recorded as applied before sending and never retried.
+  - `AFK_GAME` is now kept alive with heartbeats whenever it drives the lighting (AFK blackout **or** a user / profile colour). It has a 60 s deinitialize timer and lighting events are sent only on transitions, so colours could revert to GG lighting after about a minute.
+  - Re-binding the LIGHTING handler right before an event no longer sends `/stop_game` in between, which briefly flashed the native GG lighting on every colour change and on AFK entry.
+  - Switching from a coloured profile to one without a colour hands lighting back to GG immediately but **defers the native-config redeploy by 2 s**, so it no longer force-deploys the outgoing profile's config while GG is still deploying the new one.
+  - An explicit black profile colour (`[0, 0, 0]` in `profile_colors`) now turns the backlight off for that profile instead of handing lighting back to GG.
+  - Per-profile colours keep working when *Show Profile Name on OLED when Changed* is turned off: the profile monitor keeps polling (every 1 s) while colours are configured and only skips the overlay and its instant frame.
+  - Switching the keyboard back to a Desktop-loadout config now looks its colour up under the Desktop loadout name (previously the Engine config name was used, so the Desktop colour was ignored).
+  - `_active_profile_name` is initialised before the Profile-Monitor thread starts, so the colour of the loadout active at startup can no longer be reverted to the global colour by a startup race.
+  - The profile monitor polls every 350 ms (previously 80 ms) to avoid hammering GG's local server while it deploys a loadout.
+  - With RGB disabled, lighting is reliably handed back to SteelSeries GG at startup (the bound `AFK_GAME` handler is stopped and native configs redeployed once), while repeated colour changes with RGB disabled no longer trigger redundant releases.
+  - The instant OLED overlay frame on a software preconfig switch is now sent **before** the colour change is queued, so it reliably preempts GG's default OLED background.
+- **Tray menu reflects Settings (`src/Systray.py`, `src/DisplayManager.py`):**
+  - The tray menu checkmarks (e.g. *Player → Show Player*, *Clock → Show Clock*) were built before preferences were loaded and never refreshed after saving Settings, so a disabled *Enable Music Info* still showed as checked. `update_preferences()` now rebuilds the tray menu when a value it shows changed, so it always matches the saved settings. Tray toggles record the state they rebuilt, so the hot reload that follows does not rebuild (and close) a menu the user just reopened.
+- **Clock disabled no longer freezes the OLED (`src/DisplayManager.py`, `src/Timer.py`, `src/Weather.py`):**
+  - With the clock turned off, the render loop produced no frame and the OLED stayed frozen on the last image.
+  - The screen now uses exactly the same layout as the clock (`Timer.get_layout_image()`): headset battery on the right while a headset is connected, Caps / Num / Scroll Lock badges at the bottom and mute/deafen icons top-left (each when enabled in Settings). Only the clock face is replaced — by the weather centred in the free area (`WeatherModule.draw_centered()`: icon + temperature, description / AQI below) when weather is enabled, or left empty otherwise.
+- **GG reconnect after a restart (`src/SteelSeriesAPI.py`):**
+  - `reset()` held the request lock while re-registering, so every registration request timed out on that lock: the OLED froze for about 10 s and the hub was never re-registered after a SteelSeries GG restart. Re-registration now runs without that lock (overlapping resets are still prevented by a separate guard).
+- **Preferences defaults (`src/UserPreferences.py`):**
+  - Missing preferences are filled with **copies** of the defaults, so mutable defaults such as `profile_colors` are never shared with the class-level `DEFAULT` dict.
+- **Full code review fixes — safety & security:**
+  - **Startup never kills an unrelated process (`main.py`):** a stale `.lock` file (e.g. after a reboot) could hold a PID Windows had reused; the elevated hub terminated whatever process owned it. Lock-file PIDs are now killed only when the process really is a hub instance.
+  - **Two launches can no longer kill each other (`main.py`):** the "find old instances → terminate → write lock" phase is serialised with a named mutex, and each instance writes its own temporary lock file.
+  - **GG is no longer killed while it starts (`src/DisplayManager.py`):** the "API unresponsive for 180 s → restart GG" recovery counted the time GG was not running at all, so it killed GG right after it appeared again. The silence timer is now reset while GG is absent and when it is detected.
+  - **Updater (`src/updater.py`):** the version, the download and the SHA-256 now all come from the same GitHub release (the version used to be read from `main`, which could loop on or downgrade to the latest release); the update is aborted when the release is not newer or has no published SHA-256 digest (it used to install, and run elevated, an unverified binary); the PowerShell `Unblock-File` call that interpolated the install path into a command string was removed (the Zone.Identifier stream is still deleted directly).
+  - **Local receiver DNS-rebinding guard (`src/ExtensionReceiver.py`):** requests are served only when the `Host` header is a loopback name (`127.0.0.1`, `localhost`, `[::1]`); `Access-Control-Allow-Private-Network` is granted only to allowed origins; an out-of-range port no longer kills the receiver thread (Settings also limits ports to 1–65535).
+  - **Spotify OAuth CSRF protection (`src/SpotifyAPI.py`):** the authorization request carries a random `state` that the localhost callback must return; other requests get `400` instead of "Authentication Successful". A Spotify `401` is retried once after a token refresh instead of recursing without limit.
+- **Full code review fixes — keyboard, mouse & calculator (`src/DisplayManager.py`, `src/Calculator.py`, `src/Systray.py`, `src/UserPreferences.py`):**
+  - Calculator mode no longer swallows arrows, Alt, Win, F-keys and media/volume keys system-wide (an empty character matched every digit check), and the calculator ignores empty input.
+  - The default calculator toggle is now **Ctrl + F12** — Ctrl + Insert is the standard Copy shortcut and turned calculator mode on by accident. Existing configs using the old default are migrated once.
+  - Closing the calculator with Esc / the shortcut no longer leaves the clock disabled: the tray toggle stopped turning the clock and System Stats off (the calculator already takes priority on screen).
+  - Holding a hotkey no longer fires it repeatedly on key auto-repeat (e.g. mute toggling several times).
+  - Ctrl / Shift state comes from the OS (`GetAsyncKeyState`): after Ctrl+Alt+Del the hook-tracked Ctrl could stay "held", so Insert toggled the calculator.
+  - Mouse 4/5 hotkeys also swallow the matching button-up, so the focused app no longer navigates Back/Forward.
+- **Full code review fixes — reliability:**
+  - **Weather (`src/Weather.py`):** a failed fetch (e.g. network not ready at logon) is retried after 60 s instead of showing "Loading..." for 30 minutes; the user's city query is kept separate from the geocoded name, so a preference reload no longer wipes and refetches the weather.
+  - **Volume overlay (`src/volume.py`):** no `TypeError` (and frozen OLED) when no speaker interface exists; the speaker is re-initialised every 5 s until it is available.
+  - **AFK (`src/afk_logic.py`, `src/DisplayManager.py`):** when AFK settled without a cursor baseline (locked workstation, cursor at 0,0) input is still detected and a baseline is latched, so moving the mouse wakes the hub again.
+  - **Frame failures (`src/DisplayManager.py`):** `send_frame()` returning `False` now counts as a failure, so the "frames failing for 30 s → re-register" recovery actually runs.
+  - **Spotify toggle (`src/DisplayManager.py`):** enabling / disabling *Spotify Integration* takes effect immediately instead of after a restart.
+  - **Discord (`src/DiscordRPC.py`):** the stored token is cleared only when Discord explicitly rejects it (timeouts and pipe errors are retried after 10 s), and the refresh token is stored (DPAPI-protected) and used when the ~7-day access token expires, so mute sync no longer silently stops every week.
+  - **Headset HID (`src/HIDListener.py`):** the listener thread no longer dies when the dongle is unplugged (`device_path` is read only under its lock).
+  - **Profile backups (`src/ProfileBackup.py`):** a raw-copy backup folds its `-wal` sidecar into the database when possible, and restore also restores a backup's `-wal`, so the newest committed profile changes are not lost.
+  - **Exit (`src/DisplayManager.py`):** the suspended built-in `now-playing.exe` is resumed before the (possibly slow) GameSense cleanup, so the exit watchdog can no longer leave it frozen.
+- **Optional native components & English comments (`src/volume.py`, `src/HIDListener.py`, `src/DisplayManager.py`, `src/SpotifyPlayer.py`, `src/Systray.py`):** `pythoncom`, `pycaw` / `comtypes` and `hid.dll` are optional — when missing, the volume overlay / headset sync are disabled instead of blocking startup (AGENTS.md §2). The remaining Turkish code comments were translated to English (AGENTS.md §3).
+- **Clock freeze when Music Info is disabled (`src/DisplayManager.py`):**
+  - Fixed `_run_once()` switching `self.state` to `SHOW_PLAYER` while `display_player` (Music Info) is `False` and media is playing — which previously left `frame_data` as `None` and froze the clock until media stopped. Now `self.state` stays `SHOW_CLOCK` whenever `display_player` is disabled.
+- **In-game FPS view & System Stats display rules (`src/DisplayManager.py`, `src/Timer.py`, `src/HardwareMonitor.py`, `src/SettingsWindow.py`):**
+  - With *Show Game FPS* on, the FPS now replaces the **clock face only while a game is running** (fullscreen / borderless foreground game that keeps rendering frames for 2 s — a maximised document, a slideshow or a remote desktop no longer counts; media players, Office apps, remote desktops and VMs were added to `_NON_GAME_PROCESSES`). During a game the FPS view also wins over the music player. It shows a big value styled like the clock with an `FPS` caption, while the weather widget, headset battery, lock-key badges and mute icons stay exactly as on the clock (`Timer.get_layout_image()` + `Timer.draw_value_face()`). Outside games the screen shows whatever is enabled: clock, centred weather or an empty face. Without admin rights the caption reads `NO ADMIN`.
+  - *Always Show System Stats* shows the stats all the time, in games or not. *Auto-switch to System Stats in Games* now limits the stats to gaming sessions — also when *Always Show System Stats* is on — and outside games the clock / weather / empty screen returns (`DisplayManager._system_stats_active()`).
+  - With auto-switch on, the in-game screen is System Stats with the FPS in its right column; the big FPS view is used when auto-switch is off.
+  - *Enable Clock* and *Always Show System Stats* can now be on together **only with Auto-switch enabled** (stats while gaming, clock outside games). Without Auto-switch they stay mutually exclusive, and turning Auto-switch off while both are on turns the clock off. The rule is applied in Settings (`_clock_stats_toggle()`, `_on_auto_switch_toggle()`, normalised again on save) and in the tray menu (`src/Systray.py`). Settings groups *Always Show System Stats* with *Auto-switch* and explains the rule in a note below them.
+  - The FPS capture (PresentMon ETW) now runs only when *Show Game FPS* is enabled — game detection for auto-switch is window based and never needed it. The Settings label was corrected to *Auto-switch to System Stats in Games (only while gaming)*; the unused `HardwareMonitor.is_game_running()` was removed.
+- **Stable game FPS counter (`src/fps_monitor.py`, `src/HardwareMonitor.py`):**
+  - The FPS value jumped wildly (e.g. 100 → 2000 → 100). PresentMon was recording **all processes** into one untagged buffer and the hub showed only the newest sample, which is the *instantaneous* FPS of a single present (1000 / ms since the previous present) from whichever app presented last.
+  - The monitor now records only the **foreground application** (`HardwareMonitor.get_foreground_app_pid()`, skipping the desktop, the hub and known non-game apps from the shared `_NON_GAME_PROCESSES` list) and restarts the PresentMon session when the foreground app changes (debounced, so a quick Alt+Tab does not restart it).
+  - The displayed value is the **average over the last second** (frames / total frame time), like in-game FPS counters; invalid samples (0, infinity) are ignored, and the slot falls back to `Idle` when the app has not presented a frame for 1.5 s.
+  - ctypes signatures now match the DLL's 32-bit `int` exports.
+  - The big FPS view and the System Stats column share one value (`HardwareMonitor.get_effective_fps()`: PresentMon first, then LibreHardwareMonitor's *Frame Rate* sensor), so they can no longer disagree.
+- **Game FPS shows why it cannot measure (`src/fps_monitor.py`, `src/HardwareMonitor.py`):**
+  - PresentMon only works in an elevated process; without administrator rights it fails with error `1007` and the FPS slot showed a misleading `Idle` even during a game. The slot now shows `Admin` when the hub is not running as administrator, `N/A` when the PresentMon DLL is missing or fails, and `Idle` only when the capture is running and no game is rendering.
+  - The privilege failure is logged once as a warning explaining how to fix it (run the hub elevated, e.g. via the *Run at Startup* scheduled task) instead of an error on every Settings save.
+  - Settings → Display: the toggle is now labelled *Show Game FPS (requires Administrator)* and a status line below it shows whether the hub is currently running as administrator; if not, it explains that the FPS slot will show `Admin` and how to fix it (`src/SettingsWindow.py`).
+  - Fixed `FPSMonitor.start()` storing `None` as the worker thread (`Thread(...).start()` return value), so `stop()` now actually waits for the worker to exit.
+
+---
+
 ## [`v1.53`] — 2026-11-09 — 💡 AFK Lighting Sync Fix
 ### ✨ Fix / Feature Upgrade (`+0.01`)
 - **AFK Lighting Synchronization (`src/DisplayManager.py`):**

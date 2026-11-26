@@ -162,8 +162,26 @@ class ExtensionHandler(BaseHTTPRequestHandler):
             return True
         return origin in (f"http://{host}", f"https://{host}")
 
+    _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+
+    def _host_allowed(self) -> bool:
+        """DNS-rebinding guard: serve only requests addressed to a loopback name.
+
+        A page on http://evil.example:PORT whose DNS was rebound to 127.0.0.1 sends
+        Host: evil.example:PORT (and a matching Origin), which the Origin == Host
+        check alone would have accepted.
+        """
+        host = (self.headers.get('Host') or '').strip().lower()
+        if not host:
+            return True  # HTTP/1.0 tools; browsers always send Host
+        port = getattr(self.server, "server_port", None)
+        allowed = set(self._LOOPBACK_HOSTS)
+        if port:
+            allowed.update(f"{name}:{port}" for name in self._LOOPBACK_HOSTS)
+        return host in allowed
+
     def _origin_allowed(self) -> bool:
-        return self._is_allowed_origin(
+        return self._host_allowed() and self._is_allowed_origin(
             self.headers.get('Origin'), self.headers.get('Host', '')
         )
 
@@ -172,7 +190,8 @@ class ExtensionHandler(BaseHTTPRequestHandler):
         if origin and self._is_allowed_origin(origin, self.headers.get('Host', '')):
             self.send_header('Access-Control-Allow-Origin', origin)
             self.send_header('Vary', 'Origin')
-        self.send_header('Access-Control-Allow-Private-Network', 'true')
+            # Private Network Access preflight: granted only to allowed origins
+            self.send_header('Access-Control-Allow-Private-Network', 'true')
 
     def do_POST(self):
         if not self._origin_allowed():
@@ -222,6 +241,10 @@ class ExtensionHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         # Handle Discord OAuth Redirect: http://localhost:PORT/?code=XYZ&state=...
+        if not self._host_allowed():
+            self.send_response(403)
+            self.end_headers()
+            return
         from urllib.parse import urlparse, parse_qs
         query = urlparse(self.path).query
         params = parse_qs(query)
@@ -275,6 +298,13 @@ class ExtensionHandler(BaseHTTPRequestHandler):
 
 class ExtensionReceiver:
     def __init__(self, port=2408, host='127.0.0.1'):
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            port = 0
+        if not 0 < port < 65536:
+            logger.error("Extension Receiver port %r is out of range 1-65535; using 8888", port)
+            port = 8888
         self.port = port
         self.host = host
         self.server = None
@@ -290,7 +320,7 @@ class ExtensionReceiver:
         def run_server():
             try:
                 server = HTTPServer((self.host, self.port), ExtensionHandler)
-            except OSError as e:
+            except (OSError, OverflowError, ValueError) as e:
                 logger.error(
                     "Extension Receiver could not bind %s:%s (%s). "
                     "Discord OAuth and browser media sync will be unavailable.",

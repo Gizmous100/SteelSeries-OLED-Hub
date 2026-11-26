@@ -16,7 +16,7 @@ class SpotifyPlayer:
                 return None
 
     def __init__(self, config, preferences, fps=None):
-        # ORİJİNAL FONTLAR
+        # ORIGINAL FONTS
         self.ARTIST_FONT = self._safe_font(fetch_content_path('fonts/MunroSmall.ttf'), 10)
         self.TITLE_FONT = self._safe_font(
             fetch_content_path(
